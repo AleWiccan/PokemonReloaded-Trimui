@@ -1,0 +1,2 @@
+Copia aqui la carpeta del juego (el .exe de Pokemon Reloaded y sus archivos/datos).
+El lanzador usa el primer .exe que encuentre en esta carpeta.

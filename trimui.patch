@@ -1,0 +1,1539 @@
+diff --git a/src/OpenGMK/gm8emulator/Cargo.toml b/src/OpenGMK/gm8emulator/Cargo.toml
+index d28328b..9574157 100644
+--- a/src/OpenGMK/gm8emulator/Cargo.toml
++++ b/src/OpenGMK/gm8emulator/Cargo.toml
+@@ -12,6 +12,13 @@ name = "gm8emulator"
+ path = "src/lib.rs"
+ crate-type = ["cdylib", "rlib"]
+ 
++[features]
++# Audio de escritorio (libsoundio). Se desactiva en la Trimui.
++default = ["desktop-audio", "clipboard"]
++desktop-audio = ["udon/soundio"]
++# Consolas Linux sin X11 (Trimui): ventana/GL/audio/mando por SDL2 cargado con dlopen.
++trimui = ["ramen/sdl2", "dep:sdl2lite"]
++
+ [build-dependencies]
+ gl_generator = "0.14"
+ 
+@@ -22,7 +29,7 @@ winres = "0.1"
+ bincode = "1.3.3"
+ flate2 = "1.0"
+ byteorder = "1.5"
+-clipboard = "0.5"
++clipboard = { version = "0.5", optional = true }
+ encoding_rs = "0.8"
+ getopts = "0.2"
+ getrandom = "0.2"  # 0.3.4
+@@ -52,6 +59,10 @@ libffi = "3.1.0"
+ [target.'cfg(unix)'.dependencies]
+ libc = "0.2"
+ 
++[dependencies.sdl2lite]
++path = "../../../vendor/sdl2lite"
++optional = true
++
+ [dependencies.udon]
+ path = "../../../vendor/udon"
+ features = ["serde-derives", "wav"]
+diff --git a/src/OpenGMK/gm8emulator/build.rs b/src/OpenGMK/gm8emulator/build.rs
+index 839bc48..b11e398 100644
+--- a/src/OpenGMK/gm8emulator/build.rs
++++ b/src/OpenGMK/gm8emulator/build.rs
+@@ -11,6 +11,26 @@ static OPENGL_EXTENSIONS: &[&str] = &[];
+ fn main() -> Result<(), Box<dyn Error>> {
+     let out = env::var("OUT_DIR")?;
+ 
++    // Cfgs propios, segun el destino real de la compilacion (en un build.rs `cfg!` mira al host).
++    //   gles_backend: OpenGL ES + GLSL ES (Android y Trimui)
++    //   native_audio: la salida de audio la abre el propio emulador (AAudio o SDL2), sin libsoundio
++    //   fixed_screen: la pantalla ocupa todo y no se puede mover ni redimensionar
++    //   x11_gl:       Linux de escritorio con X11/GLX
++    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
++    let trimui = env::var_os("CARGO_FEATURE_TRIMUI").is_some();
++    let android = target_os == "android";
++    for name in ["gles_backend", "native_audio", "fixed_screen", "x11_gl"] {
++        println!("cargo:rustc-check-cfg=cfg({})", name);
++    }
++    if android || trimui {
++        println!("cargo:rustc-cfg=gles_backend");
++        println!("cargo:rustc-cfg=native_audio");
++        println!("cargo:rustc-cfg=fixed_screen");
++    }
++    if target_os == "linux" && !trimui {
++        println!("cargo:rustc-cfg=x11_gl");
++    }
++
+     // that one giant macro in kernel.rs
+     let aa_macro_path = &Path::new(&out).join("_apply_args.macro.rs");
+     if !aa_macro_path.is_file() {
+@@ -42,6 +62,9 @@ fn main() -> Result<(), Box<dyn Error>> {
+ 
+     // opengl bindings
+     let mut bindings = File::create(&Path::new(&out).join("gl_bindings.rs"))?;
++    // OJO: `cfg!` en un build.rs mira al host, asi que esto siempre da los bindings de escritorio
++    // (`gl::Gl`, con BGRA...). Es lo que el codigo espera: las funciones que GLES no tiene las
++    // sustituye por no-ops el cargador de funciones. No cambiar a Api::Gles2 (la struct se llamaria Gles2).
+     let (api, version) = if cfg!(target_os = "android") {
+         (Api::Gles2, (3, 3))
+     } else {
+diff --git a/src/OpenGMK/gm8emulator/src/game.rs b/src/OpenGMK/gm8emulator/src/game.rs
+index 174b38a..8472823 100644
+--- a/src/OpenGMK/gm8emulator/src/game.rs
++++ b/src/OpenGMK/gm8emulator/src/game.rs
+@@ -617,7 +617,7 @@ impl Game {
+         let window_icons = !settings.dont_show_buttons;
+ 
+         let connection = ramen::connection::Connection::new()?;
+-        #[cfg(target_os = "linux")]
++        #[cfg(x11_gl)]
+         unsafe {
+             let display = connection.xdisplay();
+             let screen = connection.xscreenid();
+@@ -646,7 +646,7 @@ impl Game {
+             });
+ 
+         // if linux... pass visual...
+-        #[cfg(target_os = "linux")]
++        #[cfg(x11_gl)]
+         unsafe {
+             let glx = crate::render::opengl::glx::GLX.as_ref().unwrap();
+             builder = builder.depth(glx.depth).visual(glx.visual);
+@@ -1442,7 +1442,16 @@ impl Game {
+                     (width, height)
+                 }
+             },
+-            #[cfg(not(target_os = "android"))]
++            #[cfg(feature = "trimui")]
++            window_inner_size: {
++                let (surface_w, surface_h) = ramen::platform::sdl2::window_size();
++                if surface_w > 0 && surface_h > 0 {
++                    (surface_w, surface_h)
++                } else {
++                    (width, height)
++                }
++            },
++            #[cfg(not(any(target_os = "android", feature = "trimui")))]
+             window_inner_size: (width, height),
+             window_is_logical_dpi: false,
+             window_offset_spoof: (0, 0),
+diff --git a/src/OpenGMK/gm8emulator/src/game/audio.rs b/src/OpenGMK/gm8emulator/src/game/audio.rs
+index b607cd6..b9612c9 100644
+--- a/src/OpenGMK/gm8emulator/src/game/audio.rs
++++ b/src/OpenGMK/gm8emulator/src/game/audio.rs
+@@ -1,6 +1,10 @@
+ pub mod midi;
+ #[cfg(target_os = "android")]
+ mod aaudio;
++#[cfg(feature = "trimui")]
++mod sdl_audio;
++#[cfg(feature = "trimui")]
++use sdl_audio as aaudio;
+ mod mixer;
+ mod mp3;
+ 
+@@ -100,19 +104,19 @@ impl Source for InterprocessSource {
+     fn reset(&mut self) {}
+ }
+ 
+-#[cfg(target_os = "android")]
++#[cfg(native_audio)]
+ fn session_api() -> Api {
+     Api::Dummy
+ }
+ 
+-#[cfg(not(target_os = "android"))]
++#[cfg(not(native_audio))]
+ fn session_api() -> Api {
+     Api::SoundIo
+ }
+ 
+ impl AudioManager {
+     /// An audio manager that produces no output. Used on platforms without an audio backend yet.
+-    #[cfg(target_os = "android")]
++    #[cfg(native_audio)]
+     fn disabled() -> Self {
+         Self {
+             mixer: None,
+@@ -130,7 +134,7 @@ impl AudioManager {
+     }
+ 
+     /// Android audio: drives the mixer from a native AAudio output stream.
+-    #[cfg(target_os = "android")]
++    #[cfg(native_audio)]
+     fn new_android(do_output: bool) -> Self {
+         let global_volume = Arc::new(AtomicU32::from(1.0f32.to_bits()));
+         if !do_output {
+@@ -158,27 +162,27 @@ impl AudioManager {
+     }
+ 
+     pub fn new(do_output: bool, capture_audio: bool) -> Self {
+-        #[cfg(target_os = "android")]
++        #[cfg(native_audio)]
+         {
+             Self::new_android(do_output)
+         }
+-        #[cfg(not(target_os = "android"))]
++        #[cfg(not(native_audio))]
+         {
+             Self::new_desktop(do_output, capture_audio)
+         }
+     }
+ 
+     /// Desktop audio: pulls from the mixer with udon's SoundIo session.
+-    #[cfg(not(target_os = "android"))]
++    #[cfg(not(native_audio))]
+     fn new_desktop(do_output: bool, capture_audio: bool) -> Self {
+         // TODO: not all these unwraps
+         let session = Session::new(session_api()).unwrap();
+         let device = match session.default_output_device() {
+             Ok(device) => device,
+             Err(_) => {
+-                #[cfg(not(target_os = "android"))]
++                #[cfg(not(native_audio))]
+                 panic!("no se pudo obtener el dispositivo de audio de salida");
+-                #[cfg(target_os = "android")]
++                #[cfg(native_audio)]
+                 return Self::disabled();
+             },
+         };
+@@ -565,9 +569,9 @@ pub(crate) fn check_mp3(file: Box<[u8]>) -> Result<(), String> {
+ 
+ /// Stops and resumes the audio output when the app goes to the background and comes back.
+ pub fn set_output_paused(paused: bool) {
+-    #[cfg(target_os = "android")]
++    #[cfg(native_audio)]
+     aaudio::set_paused(paused);
+-    #[cfg(not(target_os = "android"))]
++    #[cfg(not(native_audio))]
+     let _ = paused;
+ }
+ 
+diff --git a/src/OpenGMK/gm8emulator/src/game/audio/sdl_audio.rs b/src/OpenGMK/gm8emulator/src/game/audio/sdl_audio.rs
+new file mode 100644
+index 0000000..08cdb5e
+--- /dev/null
++++ b/src/OpenGMK/gm8emulator/src/game/audio/sdl_audio.rs
+@@ -0,0 +1,106 @@
++//! Audio output through SDL2 (Trimui and other handhelds without PulseAudio/JACK).
++//!
++//! Same idea as `aaudio.rs`: the engine feeds a `Mixer`, and here an SDL audio device pulls from it
++//! straight from SDL's own audio thread. SDL is loaded with `dlopen` (see the `sdl2lite` crate), so
++//! the binary uses whatever `libSDL2` the console ships.
++
++use std::{
++    ffi::{c_int, c_void},
++    ptr,
++    sync::{
++        atomic::{AtomicU32, Ordering},
++        Arc, Mutex,
++    },
++};
++
++use sdl2lite::{AudioSpec, AUDIO_F32SYS, SDL_INIT_AUDIO};
++use udon::source::{ChannelCount, Sample, SampleRate, Source};
++
++use super::mixer::{Mixer, MixerHandle};
++
++/// SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE | SDL_AUDIO_ALLOW_SAMPLES_CHANGE
++const ALLOW_CHANGES: c_int = 0x1 | 0x4 | 0x8;
++
++/// The mixer currently being pulled by the SDL callback, if any.
++static MIXER: Mutex<Option<Mixer>> = Mutex::new(None);
++
++/// The SDL audio device id (0 = none), so the output can be paused and resumed.
++static DEVICE: AtomicU32 = AtomicU32::new(0);
++
++/// Stops or resumes the output.
++pub fn set_paused(paused: bool) {
++    let dev = DEVICE.load(Ordering::Relaxed);
++    if dev == 0 {
++        return
++    }
++    if let Ok(sdl) = sdl2lite::get() {
++        unsafe { (sdl.pause_audio_device)(dev, paused as c_int) };
++    }
++}
++
++/// Fills `len` bytes of interleaved f32 audio from the mixer. SDL calls this from its own audio
++/// thread, so a failed `try_lock` just yields silence instead of blocking it.
++unsafe extern "C" fn data_callback(_userdata: *mut c_void, stream: *mut u8, len: c_int) {
++    let samples = (len.max(0) as usize) / std::mem::size_of::<Sample>();
++    let buffer = std::slice::from_raw_parts_mut(stream as *mut Sample, samples);
++    match MIXER.try_lock() {
++        Ok(mut guard) => match guard.as_mut() {
++            Some(mixer) => {
++                let written = mixer.write_samples(buffer);
++                if written < samples {
++                    buffer[written..].iter_mut().for_each(|x| *x = 0.0);
++                }
++            },
++            None => buffer.iter_mut().for_each(|x| *x = 0.0),
++        },
++        Err(_) => buffer.iter_mut().for_each(|x| *x = 0.0),
++    }
++}
++
++/// Opens the output and hands the mixer over to its callback. Returns the device id (kept alive for
++/// the life of the process), the channel count, the sample rate, and the handle used to add sounds.
++pub fn open(global_volume: Arc<AtomicU32>) -> Result<(usize, ChannelCount, SampleRate, MixerHandle), String> {
++    let sdl = sdl2lite::get()?;
++    unsafe {
++        if (sdl.init_sub_system)(SDL_INIT_AUDIO) != 0 {
++            return Err(format!("SDL_InitSubSystem(audio) fallo: {}", sdl2lite::last_error(sdl)))
++        }
++
++        let want = AudioSpec {
++            freq: 48000,
++            format: AUDIO_F32SYS,
++            channels: 2,
++            silence: 0,
++            samples: 1024,
++            padding: 0,
++            size: 0,
++            callback: Some(data_callback),
++            userdata: ptr::null_mut(),
++        };
++        let mut have = AudioSpec::zeroed();
++        let dev = (sdl.open_audio_device)(ptr::null(), 0, &want, &mut have, ALLOW_CHANGES);
++        if dev == 0 {
++            return Err(format!("SDL_OpenAudioDevice fallo: {}", sdl2lite::last_error(sdl)))
++        }
++        if have.format != AUDIO_F32SYS {
++            return Err(format!("SDL no entrego audio f32 (formato 0x{:x})", have.format))
++        }
++
++        let channels = ChannelCount::new(u16::from(have.channels.max(1))).ok_or("canal de audio invalido")?;
++        let sample_rate = SampleRate::new(have.freq.max(8000) as u32).ok_or("frecuencia de audio invalida")?;
++
++        let (mixer, handle) = Mixer::new(sample_rate, channels, global_volume);
++        *MIXER.lock().unwrap() = Some(mixer);
++        DEVICE.store(dev, Ordering::Relaxed);
++
++        // SDL devices start paused.
++        (sdl.pause_audio_device)(dev, 0);
++        eprintln!(
++            "[sdl-audio] salida abierta: {} canales @ {} Hz, buffer de {} muestras",
++            channels.get(),
++            sample_rate.get(),
++            have.samples
++        );
++        Ok((dev as usize, channels, sample_rate, handle))
++    }
++}
+diff --git a/src/OpenGMK/gm8emulator/src/gml/kernel.rs b/src/OpenGMK/gm8emulator/src/gml/kernel.rs
+index 669ca87..8a97789 100644
+--- a/src/OpenGMK/gm8emulator/src/gml/kernel.rs
++++ b/src/OpenGMK/gm8emulator/src/gml/kernel.rs
+@@ -390,7 +390,7 @@ impl Game {
+         // On Android the surface is the whole screen and cannot be moved or resized; pretending
+         // otherwise would break the window→game coordinate mapping, so it is only honoured on
+         // desktop, where the backend implements it.
+-        #[cfg(not(target_os = "android"))]
++        #[cfg(not(fixed_screen))]
+         if width > 0 && height > 0 {
+             self.window_inner_size = (width as u32, height as u32);
+             self.window.set_position((x as _, y as _));
+diff --git a/src/OpenGMK/gm8emulator/src/imgui_utils.rs b/src/OpenGMK/gm8emulator/src/imgui_utils.rs
+index ef2bde3..77cbdef 100644
+--- a/src/OpenGMK/gm8emulator/src/imgui_utils.rs
++++ b/src/OpenGMK/gm8emulator/src/imgui_utils.rs
+@@ -1,4 +1,5 @@
+ use crate::types::Colour;
++#[cfg(feature = "clipboard")]
+ use clipboard::{ClipboardContext, ClipboardProvider};
+ use imgui::{self, ImColor32, TableColumnSetup, WindowToken};
+ 
+@@ -358,6 +359,18 @@ impl IoCustomFunctions for imgui::Io {
+     }
+ }
+ pub struct EmuClipboardProvider;
++
++/// Sin portapapeles del sistema (Trimui): el crate `clipboard` arrastra X11, que la consola no tiene.
++#[cfg(not(feature = "clipboard"))]
++impl imgui::ClipboardBackend for EmuClipboardProvider {
++    fn get(&mut self) -> Option<String> {
++        None
++    }
++
++    fn set(&mut self, _value: &str) {}
++}
++
++#[cfg(feature = "clipboard")]
+ impl imgui::ClipboardBackend for EmuClipboardProvider {
+     fn get(&mut self) -> Option<String> {
+         if let Ok(ctx) = ClipboardProvider::new() {
+diff --git a/src/OpenGMK/gm8emulator/src/render/opengl.rs b/src/OpenGMK/gm8emulator/src/render/opengl.rs
+index d7731d6..2d94cd5 100644
+--- a/src/OpenGMK/gm8emulator/src/render/opengl.rs
++++ b/src/OpenGMK/gm8emulator/src/render/opengl.rs
+@@ -23,20 +23,24 @@ mod wgl;
+ mod wgl_ffi;
+ #[cfg(target_os = "windows")]
+ use wgl as native_gl;
+-#[cfg(target_os = "linux")]
++#[cfg(x11_gl)]
+ pub mod glx;
+-#[cfg(target_os = "linux")]
++#[cfg(x11_gl)]
+ use glx as native_gl;
+ #[cfg(target_os = "android")]
+ pub mod egl;
+ #[cfg(target_os = "android")]
+ use egl as native_gl;
++#[cfg(feature = "trimui")]
++pub mod sdl_gl;
++#[cfg(feature = "trimui")]
++use sdl_gl as native_gl;
+ 
+ /// GLSL version header, plus any prelude GLES needs that desktop GLSL doesn't.
+ /// GLSL ES 3.00 has no default float precision in the fragment shader, so it must be declared.
+-#[cfg(target_os = "android")]
++#[cfg(gles_backend)]
+ const SHADER_VERSION: &str = "#version 300 es\nprecision highp float;\n";
+-#[cfg(not(target_os = "android"))]
++#[cfg(not(gles_backend))]
+ const SHADER_VERSION: &str = "#version 330 core\n";
+ 
+ macro_rules! shader_file {
+@@ -53,9 +57,9 @@ fn shader_source(body: &str) -> Vec<u8> {
+ }
+ 
+ // Desktop GL requires 3.3; GLES on Android only ever exposes a 3.x series starting at 3.0.
+-#[cfg(not(target_os = "android"))]
++#[cfg(not(gles_backend))]
+ pub const OPENGL_VERSION: (i32, i32) = (3, 3);
+-#[cfg(target_os = "android")]
++#[cfg(gles_backend)]
+ pub const OPENGL_VERSION: (i32, i32) = (3, 0);
+ 
+ #[derive(Clone, Copy, PartialEq)]
+@@ -529,7 +533,7 @@ impl RendererImpl {
+             imp.set_swap_interval(if options.vsync { 1 } else { 0 });
+             // Desktop GL accepts DEPTH_COMPONENT* with a FLOAT type; GLES requires an integer
+             // type matching the depth size, so the pair has to be chosen per platform.
+-            let (zbuf_format, zbuf_type) = if cfg!(target_os = "android") {
++            let (zbuf_format, zbuf_type) = if cfg!(gles_backend) {
+                 if options.zbuf_24 {
+                     (gl::DEPTH_COMPONENT24 as GLint, gl::UNSIGNED_INT)
+                 } else {
+@@ -2121,7 +2125,7 @@ impl RendererTrait for RendererImpl {
+         let pow2 = (raw as u64).next_power_of_two() as u32 >> usize::from(!raw.is_power_of_two());
+         // A max-size atlas would be gigabytes of RGBA; that fails on mobile GPUs and
+         // mostly on desktops too. Several smaller atlases work just as well.
+-        let cap = if cfg!(target_os = "android") { 4096 } else { 8192 };
++        let cap = if cfg!(gles_backend) { 4096 } else { 8192 };
+         pow2.min(cap)
+     }
+ 
+@@ -2159,7 +2163,7 @@ impl RendererTrait for RendererImpl {
+                         height as _,       // height
+                         0,                 // border ("must be 0")
+                         // GLES has no BGRA; only the allocation happens here, so either works.
+-                        if cfg!(target_os = "android") { gl::RGBA } else { gl::BGRA },
++                        if cfg!(gles_backend) { gl::RGBA } else { gl::BGRA },
+                         gl::UNSIGNED_BYTE, // type
+                         ptr::null(),       // data
+                     );
+@@ -2175,7 +2179,7 @@ impl RendererTrait for RendererImpl {
+ 
+             // upload textures
+             // GLES has no BGRA format, so the pixels are swapped to RGBA and uploaded that way.
+-            if cfg!(target_os = "android") {
++            if cfg!(gles_backend) {
+                 for (_, pixels) in &mut sprites {
+                     crate::util::bgra2rgba(pixels);
+                 }
+@@ -2216,7 +2220,7 @@ impl RendererTrait for RendererImpl {
+                     0,                    // yoffset
+                     atlas_w as _,         // width
+                     atlas_h as _,         // height
+-                    if cfg!(target_os = "android") { gl::RGBA } else { gl::BGRA },
++                    if cfg!(gles_backend) { gl::RGBA } else { gl::BGRA },
+                     gl::UNSIGNED_BYTE,    // type
+                     atlas_buf.as_ptr() as _, // pixels
+                 );
+@@ -3876,7 +3880,7 @@ impl RendererTrait for RendererImpl {
+                 w_x + w_w,
+                 blit_y + w_h,
+                 gl::COLOR_BUFFER_BIT,
+-                if cfg!(target_os = "android") {
++                if cfg!(gles_backend) {
+                     gl::NEAREST
+                 } else if self.next_render_state.interpolate_pixels.into() {
+                     gl::LINEAR
+diff --git a/src/OpenGMK/gm8emulator/src/render/opengl/sdl_gl.rs b/src/OpenGMK/gm8emulator/src/render/opengl/sdl_gl.rs
+new file mode 100644
+index 0000000..813fca9
+--- /dev/null
++++ b/src/OpenGMK/gm8emulator/src/render/opengl/sdl_gl.rs
+@@ -0,0 +1,100 @@
++//! GL context creation through SDL2, for Trimui and similar handhelds (OpenGL ES, no X11/EGL by hand).
++//!
++//! The window is made by ramen's SDL2 backend, with GLES 3.0 attributes already requested. Here
++//! we only create the context on that window and load entry points with `SDL_GL_GetProcAddress`.
++//! Mirrors `egl.rs`, minus everything that existed because of Android's surface lifecycle.
++
++use std::{
++    ffi::{c_char, c_int, c_void, CString},
++    sync::Mutex,
++};
++
++use ramen::{connection::Connection, window::Window};
++use sdl2lite::Sdl;
++
++extern "C" fn no_op_fn() {}
++
++/// Entry points stubbed out because GLES doesn't have them.
++static MISSING_FNS: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
++
++/// Prints the stubbed entry points once, so they show up in the log without flooding it.
++pub fn log_stubbed_once() {
++    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
++    let _ = ONCE.get_or_init(|| {
++        let list: Vec<String> = MISSING_FNS.lock().unwrap().iter().map(|s| s.to_string()).collect();
++        if !list.is_empty() {
++            eprintln!("[gl] ausentes, sustituidas por no-ops: {}", list.join(", "));
++        }
++    });
++}
++
++pub struct PlatformImpl {
++    sdl: &'static Sdl,
++    window: *mut c_void,
++    context: *mut c_void,
++}
++
++impl PlatformImpl {
++    /// Creates the GLES context on the window and makes it current.
++    pub unsafe fn new(connection: &Connection, window: &Window) -> Result<Self, String> {
++        let _ = connection;
++        let sdl = sdl2lite::get()?;
++        let win = window.xid();
++        if win.is_null() {
++            return Err("ramen no entrego una ventana SDL".into())
++        }
++        let context = (sdl.gl_create_context)(win);
++        if context.is_null() {
++            return Err(format!("SDL_GL_CreateContext fallo: {}", sdl2lite::last_error(sdl)))
++        }
++        if (sdl.gl_make_current)(win, context) != 0 {
++            let err = sdl2lite::last_error(sdl);
++            (sdl.gl_delete_context)(context);
++            return Err(format!("SDL_GL_MakeCurrent fallo: {}", err))
++        }
++        // Vsync on; the game's frame limiter does the rest.
++        let _ = (sdl.gl_set_swap_interval)(1);
++        Ok(Self { sdl, window: win, context })
++    }
++
++    pub unsafe fn get_function_loader() -> Result<Box<dyn FnMut(&'static str) -> *const c_void>, String> {
++        let sdl = sdl2lite::get()?;
++        Ok(Box::new(move |name: &'static str| {
++            let Ok(cname) = CString::new(name) else { return no_op_fn as *const c_void };
++            let mut ptr = unsafe { (sdl.gl_get_proc_address)(cname.as_ptr() as *const c_char) } as *const c_void;
++            if ptr.is_null() {
++                // Desktop-only entry points that GLES doesn't provide. Rather than let gl_generator's
++                // fallback abort the game, point at a no-op and report them.
++                MISSING_FNS.lock().unwrap().push(name);
++                ptr = no_op_fn as *const c_void;
++            }
++            ptr
++        }))
++    }
++
++    pub unsafe fn clean_function_loader() {
++        log_stubbed_once();
++    }
++
++    pub unsafe fn swap_buffers(&self) {
++        (self.sdl.gl_swap_window)(self.window);
++    }
++
++    pub unsafe fn set_swap_interval(&self, n: u32) -> bool {
++        (self.sdl.gl_set_swap_interval)(n as c_int) == 0
++    }
++
++    pub unsafe fn get_swap_interval(&self) -> u32 {
++        (self.sdl.gl_get_swap_interval)().max(0) as u32
++    }
++
++    pub unsafe fn wait_vsync(&self) {
++        // swap_buffers already waits for vsync.
++    }
++}
++
++impl Drop for PlatformImpl {
++    fn drop(&mut self) {
++        unsafe { (self.sdl.gl_delete_context)(self.context) };
++    }
++}
+diff --git a/vendor/ramen/Cargo.toml b/vendor/ramen/Cargo.toml
+index 289848a..51614b0 100644
+--- a/vendor/ramen/Cargo.toml
++++ b/vendor/ramen/Cargo.toml
+@@ -21,11 +21,16 @@ parking_lot = { version = "0.12", optional = true }
+ [target.'cfg(unix)'.dependencies]
+ libc = "0.2"
+ 
++[dependencies.sdl2lite]
++path = "../sdl2lite"
++optional = true
++
+ [features]
+ default = ["input"]
+ input = []
+ nightly-rustdoc = []
+ parking-lot = ["parking_lot"]
++sdl2 = ["sdl2lite"]
+ 
+ [package.metadata.docs.rs]
+ features = ["nightly-rustdoc"]
+diff --git a/vendor/ramen/src/platform.rs b/vendor/ramen/src/platform.rs
+index eb9be70..9adfb09 100644
+--- a/vendor/ramen/src/platform.rs
++++ b/vendor/ramen/src/platform.rs
+@@ -6,12 +6,19 @@ pub mod win32;
+ pub(crate) use win32 as imp;
+ 
+ #[cfg_attr(feature = "nightly-rustdoc", doc(cfg(target_os = "linux")))]
+-#[cfg_attr(not(feature = "nightly-rustdoc"), cfg(target_os = "linux"))]
++#[cfg_attr(not(feature = "nightly-rustdoc"), cfg(all(target_os = "linux", not(feature = "sdl2"))))]
+ pub mod linux;
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(all(target_os = "linux", not(feature = "sdl2")))]
+ pub(crate) use linux as imp;
+ 
++/// SDL2 backend for Linux handhelds without X11 (Trimui).
++#[cfg(all(target_os = "linux", feature = "sdl2"))]
++pub mod sdl2;
++
++#[cfg(all(target_os = "linux", feature = "sdl2"))]
++pub(crate) use sdl2 as imp;
++
+ #[cfg_attr(not(feature = "nightly-rustdoc"), cfg(target_os = "android"))]
+ pub mod android;
+ 
+diff --git a/vendor/ramen/src/platform/controls_default.ini b/vendor/ramen/src/platform/controls_default.ini
+new file mode 100644
+index 0000000..30b6f67
+--- /dev/null
++++ b/vendor/ramen/src/platform/controls_default.ini
+@@ -0,0 +1,63 @@
++# Controles de Pokemon Reloaded en Trimui (Smart Pro).
++#
++# FORMATO   entrada = TECLA
++#   b<N>            boton N del mando                    b1 = Z
++#   a<N>+  a<N>-    eje N empujado en positivo/negativo  a2+ = Space
++#   hat-up hat-down hat-left hat-right   cruceta
++#   shift+<entrada> = TECLA   segunda capa: valido mientras se mantiene el boton "shift"
++#   shift = b<N>    boton que activa la segunda capa. Si se pulsa y se suelta SIN usar
++#                   ninguna otra entrada, envia su propia tecla de la capa normal (un "toque").
++# Teclas validas: A-Z, 0-9, F1-F12, Enter, Esc, Space, Up, Down, Left, Right, Tab, Backspace
++#
++# Los numeros de boton/eje dependen de la consola. Con un archivo vacio "debug.on" en la
++# carpeta del port, log.txt anota cada pulsacion ("[input] boton 3 abajo", "[input] eje 1- activo").
++# Si este archivo tiene al menos una linea valida, REEMPLAZA por completo la tabla por defecto.
++
++# ---- capa normal ----
++b1 = Z           # A
++b0 = X           # B
++b2 = C           # X
++b3 = V           # Y   (bicicleta / ver)
++b4 = B           # L1  sacar Pokemon
++b5 = A           # R1  objeto asignado
++a2+ = Space      # L2  Pokemon
++a5+ = O          # R2  mochila
++b7 = Enter       # Start  menu
++b8 = Esc         # Menu   salir
++b6 = M           # Select mapa (toque corto; mantenido es el Shift)
++
++hat-up = Up
++hat-down = Down
++hat-left = Left
++hat-right = Right
++
++# palanca izquierda = flechas (eje 0 = horizontal, eje 1 = vertical; arriba es a1-)
++a1- = Up
++a1+ = Down
++a0- = Left
++a0+ = Right
++
++# palanca derecha (eje 3 = horizontal, eje 4 = vertical; arriba es a4-)
++a4- = S          # arriba     cambio en combate
++a4+ = E          # abajo      escapar en combate
++a3- = F          # izquierda  flauta / buscar
++a3+ = P          # derecha    porcentaje de captura / menu entrenador
++
++# ---- capa 2: mantener Select ----
++shift = b6
++shift+hat-up = 1
++shift+hat-right = 2
++shift+hat-down = 3
++shift+hat-left = 4
++shift+b1 = 5     # A
++shift+b0 = 6     # B
++shift+b2 = 7     # X
++shift+b3 = 8     # Y
++shift+b4 = 9     # L1
++shift+b5 = F8    # R1  smartphone
++
++# palanca derecha con Select mantenido
++shift+a4- = F12  # arriba     Pokedex
++shift+a4+ = D    # abajo      dar objeto
++shift+a3- = L    # izquierda  estilo de menu / ubicaciones en la Pokedex
++shift+a3+ = K    # derecha    color de menu
+diff --git a/vendor/ramen/src/platform/sdl2.rs b/vendor/ramen/src/platform/sdl2.rs
+new file mode 100644
+index 0000000..1878002
+--- /dev/null
++++ b/vendor/ramen/src/platform/sdl2.rs
+@@ -0,0 +1,578 @@
++//! SDL2 backend for ramen (Trimui and other handhelds with no X11/Wayland).
++//!
++//! The window and the GL context come from the device's own `libSDL2`, loaded at run time with
++//! `dlopen` (see the `sdl2lite` crate). Input comes from the gamepad (raw joystick API) and is
++//! turned into keyboard events, because the game only understands keys.
++//!
++//! The button layout can be changed without recompiling through `controls.ini` (see
++//! [`Controls::load`]); the path can be overridden with `TRIMUI_CONTROLS`.
++
++use std::{
++    ffi::{c_char, c_int, c_void, CString},
++    sync::{
++        atomic::{AtomicU32, Ordering},
++        Mutex, OnceLock,
++    },
++};
++
++use sdl2lite::Sdl;
++
++use crate::{error::Error, event::Event, input::Key, window::Builder};
++
++/// Stand-in for X11's `Display`, which this backend does not have.
++#[repr(C)]
++pub struct Display {
++    _opaque: [u8; 0],
++}
++
++static WIN_W: AtomicU32 = AtomicU32::new(0);
++static WIN_H: AtomicU32 = AtomicU32::new(0);
++
++/// Size of the SDL window in pixels (0, 0 until the window has been created).
++pub fn window_size() -> (u32, u32) {
++    (WIN_W.load(Ordering::Relaxed), WIN_H.load(Ordering::Relaxed))
++}
++
++fn sdl() -> Result<&'static Sdl, Error> {
++    sdl2lite::get().map_err(|e| Error::Text(e.into()))
++}
++
++fn sdl_err(what: &str, s: &Sdl) -> Error {
++    Error::Text(format!("{}: {}", what, sdl2lite::last_error(s)).into())
++}
++
++// ---------------------------------------------------------------------------------------------
++// Controls
++// ---------------------------------------------------------------------------------------------
++
++const LETTERS: [Key; 26] = [
++    Key::A, Key::B, Key::C, Key::D, Key::E, Key::F, Key::G, Key::H, Key::I, Key::J, Key::K, Key::L, Key::M,
++    Key::N, Key::O, Key::P, Key::Q, Key::R, Key::S, Key::T, Key::U, Key::V, Key::W, Key::X, Key::Y, Key::Z,
++];
++
++const DIGITS: [Key; 10] = [
++    Key::Alpha0, Key::Alpha1, Key::Alpha2, Key::Alpha3, Key::Alpha4,
++    Key::Alpha5, Key::Alpha6, Key::Alpha7, Key::Alpha8, Key::Alpha9,
++];
++
++const FUNCTION_KEYS: [Key; 12] = [
++    Key::F1, Key::F2, Key::F3, Key::F4, Key::F5, Key::F6, Key::F7, Key::F8, Key::F9, Key::F10, Key::F11, Key::F12,
++];
++
++/// Default layout, also shipped as `controls.ini` next to the port.
++const DEFAULT_INI: &str = include_str!("controls_default.ini");
++
++fn parse_key(name: &str) -> Option<Key> {
++    let n = name.trim().to_ascii_lowercase();
++    if n.len() == 1 {
++        let c = n.as_bytes()[0];
++        if c.is_ascii_lowercase() {
++            return Some(LETTERS[(c - b'a') as usize])
++        }
++        if c.is_ascii_digit() {
++            return Some(DIGITS[(c - b'0') as usize])
++        }
++    }
++    if let Some(num) = n.strip_prefix('f').and_then(|num| num.parse::<usize>().ok()) {
++        if (1..=12).contains(&num) {
++            return Some(FUNCTION_KEYS[num - 1])
++        }
++    }
++    Some(match n.as_str() {
++        "enter" | "return" => Key::Return,
++        "esc" | "escape" => Key::Escape,
++        "space" => Key::Space,
++        "up" => Key::UpArrow,
++        "down" => Key::DownArrow,
++        "left" => Key::LeftArrow,
++        "right" => Key::RightArrow,
++        "tab" => Key::Tab,
++        "backspace" => Key::Backspace,
++        _ => return None,
++    })
++}
++
++/// Where an input comes from.
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum Src {
++    Button(u8),
++    /// Axis index and direction (`true` = positive).
++    Axis(u8, bool),
++    /// One of SDL's `SDL_HAT_*` bits.
++    Hat(u8),
++}
++
++const SRC_AXIS: u32 = 2000;
++const SRC_HAT: u32 = 1000;
++const SRC_TAP: u32 = 5000;
++const SRC_KEYBOARD: u32 = 10000;
++/// Set on the source id of anything pressed while the shift button is held.
++const LAYER_BIT: u32 = 1 << 20;
++
++impl Src {
++    fn id(self) -> u32 {
++        match self {
++            Src::Button(b) => u32::from(b),
++            Src::Hat(bit) => SRC_HAT + u32::from(bit),
++            Src::Axis(a, positive) => SRC_AXIS + u32::from(a) * 2 + u32::from(positive),
++        }
++    }
++}
++
++fn parse_src(text: &str) -> Option<Src> {
++    match text.trim() {
++        "hat-up" => return Some(Src::Hat(sdl2lite::SDL_HAT_UP)),
++        "hat-down" => return Some(Src::Hat(sdl2lite::SDL_HAT_DOWN)),
++        "hat-left" => return Some(Src::Hat(sdl2lite::SDL_HAT_LEFT)),
++        "hat-right" => return Some(Src::Hat(sdl2lite::SDL_HAT_RIGHT)),
++        _ => (),
++    }
++    let t = text.trim();
++    if let Some(n) = t.strip_prefix('b') {
++        return n.parse::<u8>().ok().map(Src::Button)
++    }
++    if let Some(rest) = t.strip_prefix('a') {
++        let (num, positive) = if let Some(n) = rest.strip_suffix('+') {
++            (n, true)
++        } else if let Some(n) = rest.strip_suffix('-') {
++            (n, false)
++        } else {
++            return None
++        };
++        return num.parse::<u8>().ok().map(|n| Src::Axis(n, positive))
++    }
++    None
++}
++
++struct Binding {
++    src: Src,
++    /// Only active while the shift button is held.
++    shifted: bool,
++    key: Key,
++}
++
++/// Gamepad -> key table.
++struct Controls {
++    bindings: Vec<Binding>,
++    /// Button that switches to the second layer.
++    shift: Option<u8>,
++}
++
++impl Controls {
++    fn parse(text: &str, origin: &str) -> Self {
++        let mut c = Self { bindings: Vec::new(), shift: None };
++        for line in text.lines() {
++            let line = line.split(['#', ';']).next().unwrap_or("").trim();
++            let Some((lhs, rhs)) = line.split_once('=') else { continue };
++            let (lhs, rhs) = (lhs.trim().to_ascii_lowercase(), rhs.trim());
++
++            if lhs == "shift" {
++                match parse_src(&rhs.to_ascii_lowercase()) {
++                    Some(Src::Button(b)) => c.shift = Some(b),
++                    _ => eprintln!("[controls] {}: 'shift' debe ser un boton (b<N>): {}", origin, line),
++                }
++                continue
++            }
++
++            let (shifted, lhs) = match lhs.strip_prefix("shift+") {
++                Some(rest) => (true, rest.trim()),
++                None => (false, lhs.as_str()),
++            };
++            let Some(src) = parse_src(lhs) else {
++                eprintln!("[controls] {}: entrada no entendida: {}", origin, line);
++                continue
++            };
++            let Some(key) = parse_key(rhs) else {
++                eprintln!("[controls] {}: tecla desconocida: {}", origin, rhs);
++                continue
++            };
++            c.bindings.push(Binding { src, shifted, key });
++        }
++        c
++    }
++
++    /// Reads the file named by `TRIMUI_CONTROLS` (default `controls.ini`). If it is missing or has
++    /// no valid line, the built-in table is used.
++    fn load() -> Self {
++        let path = std::env::var("TRIMUI_CONTROLS").unwrap_or_else(|_| "controls.ini".to_string());
++        if let Ok(text) = std::fs::read_to_string(&path) {
++            let c = Self::parse(&text, &path);
++            if !c.bindings.is_empty() {
++                eprintln!("[controls] cargado {}: {} asignaciones, shift = {:?}", path, c.bindings.len(), c.shift);
++                return c
++            }
++            eprintln!("[controls] {} no tiene ninguna linea valida; se usan los controles por defecto", path);
++        }
++        let c = Self::parse(DEFAULT_INI, "(por defecto)");
++        eprintln!("[controls] controles por defecto: {} asignaciones, shift = {:?}", c.bindings.len(), c.shift);
++        c
++    }
++
++    fn keys_for(&self, src: Src, shifted: bool) -> Vec<Key> {
++        self.bindings.iter().filter(|b| b.src == src && b.shifted == shifted).map(|b| b.key).collect()
++    }
++}
++
++/// Which sources are holding which keys, so that two sources on the same key do not release it
++/// early, and one source can hold several keys.
++struct Held {
++    sources: Vec<(u32, Key)>,
++}
++
++impl Held {
++    fn press(&mut self, source: u32, key: Key, out: &mut Vec<Event>) {
++        if self.sources.iter().any(|(s, k)| *s == source && *k == key) {
++            return
++        }
++        let already = self.sources.iter().any(|(_, k)| *k == key);
++        self.sources.push((source, key));
++        if !already {
++            out.push(Event::KeyboardDown(key));
++        }
++    }
++
++    fn release(&mut self, source: u32, out: &mut Vec<Event>) {
++        let mut released: Vec<Key> = Vec::new();
++        self.sources.retain(|(s, k)| {
++            if *s == source {
++                released.push(*k);
++                false
++            } else {
++                true
++            }
++        });
++        for key in released {
++            if !self.sources.iter().any(|(_, k)| *k == key) {
++                out.push(Event::KeyboardUp(key));
++            }
++        }
++    }
++}
++
++const AXIS_THRESHOLD: i16 = 12000;
++
++struct Input {
++    controls: Controls,
++    held: Held,
++    hat: u8,
++    axis_pos: [bool; 16],
++    axis_neg: [bool; 16],
++    shift_down: bool,
++    /// Something else was pressed while shift was held (so releasing it is not a "tap").
++    shift_used: bool,
++    /// A tap key is being held for one frame and must be released on the next poll.
++    tap_pending: bool,
++    debug: bool,
++}
++
++impl Input {
++    fn new() -> Self {
++        Self {
++            controls: Controls::load(),
++            held: Held { sources: Vec::new() },
++            hat: 0,
++            axis_pos: [false; 16],
++            axis_neg: [false; 16],
++            shift_down: false,
++            shift_used: false,
++            tap_pending: false,
++            debug: std::env::var_os("TRIMUI_INPUT_DEBUG").is_some(),
++        }
++    }
++
++    /// Call once at the start of every poll.
++    fn begin_frame(&mut self, out: &mut Vec<Event>) {
++        if self.tap_pending {
++            self.tap_pending = false;
++            self.held.release(SRC_TAP, out);
++        }
++    }
++
++    /// An input went down or up: turn it into key events through the right layer.
++    fn activate(&mut self, src: Src, down: bool, out: &mut Vec<Event>) {
++        if let (Src::Button(b), Some(shift)) = (src, self.controls.shift) {
++            if b == shift {
++                if down {
++                    self.shift_down = true;
++                    self.shift_used = false;
++                } else {
++                    self.shift_down = false;
++                    if !self.shift_used {
++                        // A tap: send the shift button's own key for one frame.
++                        for key in self.controls.keys_for(src, false) {
++                            self.held.press(SRC_TAP, key, out);
++                            self.tap_pending = true;
++                        }
++                    }
++                }
++                return
++            }
++        }
++
++        let id = src.id();
++        if down {
++            let shifted = self.shift_down;
++            if shifted {
++                self.shift_used = true;
++            }
++            let source = if shifted { id | LAYER_BIT } else { id };
++            for key in self.controls.keys_for(src, shifted) {
++                self.held.press(source, key, out);
++            }
++        } else {
++            // Release whichever layer it was pressed in.
++            self.held.release(id, out);
++            self.held.release(id | LAYER_BIT, out);
++        }
++    }
++
++    fn button_event(&mut self, index: u8, down: bool, out: &mut Vec<Event>) {
++        if self.debug {
++            eprintln!("[input] boton {} {}", index, if down { "abajo" } else { "arriba" });
++        }
++        self.activate(Src::Button(index), down, out);
++    }
++
++    fn hat_event(&mut self, value: u8, out: &mut Vec<Event>) {
++        if self.debug {
++            eprintln!("[input] hat valor {}", value);
++        }
++        for bit in [sdl2lite::SDL_HAT_UP, sdl2lite::SDL_HAT_RIGHT, sdl2lite::SDL_HAT_DOWN, sdl2lite::SDL_HAT_LEFT] {
++            let (was, is) = (self.hat & bit != 0, value & bit != 0);
++            if is != was {
++                self.activate(Src::Hat(bit), is, out);
++            }
++        }
++        self.hat = value;
++    }
++
++    fn axis_event(&mut self, axis: u8, value: i16, out: &mut Vec<Event>) {
++        let a = axis as usize;
++        if a >= self.axis_pos.len() {
++            return
++        }
++        let (pos, neg) = (value > AXIS_THRESHOLD, value < -AXIS_THRESHOLD);
++        if pos != self.axis_pos[a] {
++            self.axis_pos[a] = pos;
++            if self.debug {
++                eprintln!("[input] eje {}+ {}", axis, if pos { "activo" } else { "reposo" });
++            }
++            self.activate(Src::Axis(axis, true), pos, out);
++        }
++        if neg != self.axis_neg[a] {
++            self.axis_neg[a] = neg;
++            if self.debug {
++                eprintln!("[input] eje {}- {}", axis, if neg { "activo" } else { "reposo" });
++            }
++            self.activate(Src::Axis(axis, false), neg, out);
++        }
++    }
++
++    fn keyboard(&mut self, scancode: u32, down: bool, out: &mut Vec<Event>) {
++        // SDL scancodes: 4..=29 are A..Z, 30..=38 are 1..9.
++        let key = match scancode {
++            4..=29 => Some(LETTERS[(scancode - 4) as usize]),
++            30..=38 => Some(DIGITS[(scancode - 29) as usize]),
++            40 => Some(Key::Return),
++            41 => Some(Key::Escape),
++            44 => Some(Key::Space),
++            79 => Some(Key::RightArrow),
++            80 => Some(Key::LeftArrow),
++            81 => Some(Key::DownArrow),
++            82 => Some(Key::UpArrow),
++            _ => None,
++        };
++        if let Some(key) = key {
++            let source = SRC_KEYBOARD + scancode;
++            if down {
++                self.held.press(source, key, out);
++            } else {
++                self.held.release(source, out);
++            }
++        }
++    }
++}
++
++// ---------------------------------------------------------------------------------------------
++// Connection / Window
++// ---------------------------------------------------------------------------------------------
++
++struct Shared {
++    joysticks: Vec<usize>,
++}
++
++static SHARED: OnceLock<Mutex<Shared>> = OnceLock::new();
++
++pub struct Connection;
++
++impl Connection {
++    pub(crate) fn new() -> Result<Self, Error> {
++        let sdl = sdl()?;
++        let flags = sdl2lite::SDL_INIT_VIDEO | sdl2lite::SDL_INIT_JOYSTICK | sdl2lite::SDL_INIT_EVENTS;
++        if unsafe { (sdl.init_sub_system)(flags) } != 0 {
++            return Err(sdl_err("SDL_InitSubSystem", sdl))
++        }
++        let shared = SHARED.get_or_init(|| Mutex::new(Shared { joysticks: Vec::new() }));
++        let mut shared = shared.lock().unwrap();
++        let count = unsafe { (sdl.num_joysticks)() };
++        for i in 0..count.max(0) {
++            let js = unsafe { (sdl.joystick_open)(i) };
++            if !js.is_null() {
++                let name = unsafe { std::ffi::CStr::from_ptr((sdl.joystick_name)(js)) };
++                eprintln!("[input] mando {}: {}", i, name.to_string_lossy());
++                shared.joysticks.push(js as usize);
++            }
++        }
++        Ok(Self)
++    }
++
++    pub(crate) fn xscreenid(&self) -> u32 {
++        0
++    }
++
++    pub(crate) fn xdisplay(&self) -> *mut Display {
++        std::ptr::null_mut()
++    }
++}
++
++pub struct Window {
++    sdl: &'static Sdl,
++    handle: *mut c_void,
++    buffer: Vec<Event>,
++    input: Input,
++    first_poll: bool,
++}
++
++// SAFETY: the window is only ever driven from the thread that owns the game.
++unsafe impl Send for Window {}
++unsafe impl Sync for Window {}
++
++impl Window {
++    pub(crate) fn new(builder: Builder) -> Result<Self, Error> {
++        let sdl = sdl()?;
++        let title = CString::new(builder.title.replace('\0', "")).unwrap_or_default();
++
++        // The GL attributes have to be set before the window exists.
++        let attrs: [(c_int, c_int); 9] = [
++            (sdl2lite::SDL_GL_CONTEXT_PROFILE_MASK, sdl2lite::SDL_GL_CONTEXT_PROFILE_ES),
++            (sdl2lite::SDL_GL_CONTEXT_MAJOR_VERSION, 3),
++            (sdl2lite::SDL_GL_CONTEXT_MINOR_VERSION, 0),
++            (sdl2lite::SDL_GL_RED_SIZE, 8),
++            (sdl2lite::SDL_GL_GREEN_SIZE, 8),
++            (sdl2lite::SDL_GL_BLUE_SIZE, 8),
++            (sdl2lite::SDL_GL_ALPHA_SIZE, 8),
++            (sdl2lite::SDL_GL_DEPTH_SIZE, 24),
++            (sdl2lite::SDL_GL_STENCIL_SIZE, 8),
++        ];
++        for (attr, value) in attrs {
++            let _ = unsafe { (sdl.gl_set_attribute)(attr, value) };
++        }
++
++        // Always fullscreen at the desktop size: these screens have no window manager.
++        let flags = sdl2lite::SDL_WINDOW_SHOWN | sdl2lite::SDL_WINDOW_OPENGL | sdl2lite::SDL_WINDOW_FULLSCREEN_DESKTOP;
++        let handle = unsafe { (sdl.create_window)(title.as_ptr(), 0, 0, 1280, 720, flags) };
++        if handle.is_null() {
++            return Err(sdl_err("SDL_CreateWindow", sdl))
++        }
++        let _ = unsafe { (sdl.show_cursor)(0) };
++
++        let (mut w, mut h): (c_int, c_int) = (0, 0);
++        unsafe { (sdl.gl_get_drawable_size)(handle, &mut w, &mut h) };
++        if w <= 0 || h <= 0 {
++            unsafe { (sdl.get_window_size)(handle, &mut w, &mut h) };
++        }
++        WIN_W.store(w.max(0) as u32, Ordering::Relaxed);
++        WIN_H.store(h.max(0) as u32, Ordering::Relaxed);
++        let driver = unsafe { (sdl.get_current_video_driver)() };
++        if !driver.is_null() {
++            eprintln!(
++                "[video] SDL driver {:?}, ventana {}x{}",
++                unsafe { std::ffi::CStr::from_ptr(driver as *const c_char) },
++                w,
++                h
++            );
++        }
++
++        Ok(Self { sdl, handle, buffer: Vec::new(), input: Input::new(), first_poll: true })
++    }
++
++    pub(crate) fn events(&self) -> &[Event] {
++        &self.buffer
++    }
++
++    pub(crate) fn poll_events(&mut self) {
++        self.buffer.clear();
++        self.input.begin_frame(&mut self.buffer);
++        let sdl = self.sdl;
++
++        if self.first_poll {
++            // Tell the game the real size right away, so it does not start from the room's size.
++            self.first_poll = false;
++            let (w, h) = window_size();
++            self.buffer.push(Event::Resize((w.min(u16::MAX as u32) as u16, h.min(u16::MAX as u32) as u16)));
++        }
++
++        let mut ev = sdl2lite::Event::zeroed();
++        while unsafe { (sdl.poll_event)(&mut ev) } != 0 {
++            match ev.kind() {
++                sdl2lite::SDL_QUIT => self.buffer.push(Event::CloseRequest),
++                sdl2lite::SDL_WINDOWEVENT => match ev.u8_at(12) {
++                    sdl2lite::SDL_WINDOWEVENT_SIZE_CHANGED => {
++                        let (w, h) = (ev.i32_at(16).max(0), ev.i32_at(20).max(0));
++                        WIN_W.store(w as u32, Ordering::Relaxed);
++                        WIN_H.store(h as u32, Ordering::Relaxed);
++                        self.buffer.push(Event::Resize((w.min(u16::MAX as i32) as u16, h.min(u16::MAX as i32) as u16)));
++                    },
++                    sdl2lite::SDL_WINDOWEVENT_FOCUS_GAINED => self.buffer.push(Event::Focus(true)),
++                    sdl2lite::SDL_WINDOWEVENT_FOCUS_LOST => self.buffer.push(Event::Focus(false)),
++                    sdl2lite::SDL_WINDOWEVENT_CLOSE => self.buffer.push(Event::CloseRequest),
++                    _ => (),
++                },
++                sdl2lite::SDL_KEYDOWN => {
++                    // ev.u8_at(13) is `repeat`: the game does its own repeat handling.
++                    if ev.u8_at(13) == 0 {
++                        self.input.keyboard(ev.u32_at(16), true, &mut self.buffer);
++                    }
++                },
++                sdl2lite::SDL_KEYUP => self.input.keyboard(ev.u32_at(16), false, &mut self.buffer),
++                sdl2lite::SDL_JOYBUTTONDOWN => self.input.button_event(ev.u8_at(12), true, &mut self.buffer),
++                sdl2lite::SDL_JOYBUTTONUP => self.input.button_event(ev.u8_at(12), false, &mut self.buffer),
++                sdl2lite::SDL_JOYHATMOTION => self.input.hat_event(ev.u8_at(13), &mut self.buffer),
++                sdl2lite::SDL_JOYAXISMOTION => self.input.axis_event(ev.u8_at(12), ev.i16_at(16), &mut self.buffer),
++                sdl2lite::SDL_JOYDEVICEADDED => {
++                    let index = ev.i32_at(8);
++                    let js = unsafe { (sdl.joystick_open)(index) };
++                    if !js.is_null() {
++                        if let Some(shared) = SHARED.get() {
++                            shared.lock().unwrap().joysticks.push(js as usize);
++                        }
++                    }
++                },
++                _ => (),
++            }
++        }
++    }
++
++    pub(crate) fn set_maximised(&self, _maximised: bool) {}
++    pub(crate) fn set_position(&self, _position: (i16, i16)) {}
++    pub(crate) fn set_borderless(&self, _borderless: bool) {}
++    pub(crate) fn set_resizable(&self, _resizable: bool) {}
++    pub(crate) fn set_size(&self, _size: (u16, u16)) {}
++    pub(crate) fn set_title(&self, title: &str) {
++        if let Ok(title) = CString::new(title.replace('\0', "")) {
++            unsafe { (self.sdl.set_window_title)(self.handle, title.as_ptr()) };
++        }
++    }
++    pub(crate) fn set_visible(&self, _visible: bool) {}
++
++    /// The raw `SDL_Window*`, for creating the GL context.
++    pub(crate) fn xid(&self) -> *mut c_void {
++        self.handle
++    }
++}
++
++impl Drop for Window {
++    fn drop(&mut self) {
++        unsafe { (self.sdl.destroy_window)(self.handle) };
++    }
++}
+diff --git a/vendor/ramen/src/window.rs b/vendor/ramen/src/window.rs
+index e517bdd..e75498a 100644
+--- a/vendor/ramen/src/window.rs
++++ b/vendor/ramen/src/window.rs
+@@ -74,7 +74,7 @@ impl Window {
+ 
+     /// The raw platform window handle: an `ANativeWindow*`. Mostly useful for creating a
+     /// GL context yourself.
+-    #[cfg(target_os = "android")]
++    #[cfg(any(target_os = "android", all(target_os = "linux", feature = "sdl2")))]
+     pub fn xid(&self) -> *mut std::ffi::c_void {
+         self.0.xid()
+     }
+@@ -183,7 +183,7 @@ impl Window {
+     }
+ 
+     /// Returns the X11 xid of this window. This function is only available on Linux backends.
+-    #[cfg(target_os = "linux")]
++    #[cfg(all(target_os = "linux", not(feature = "sdl2")))]
+     pub fn xid(&self) -> crate::platform::linux::xcb_window_t {
+         self.0.xid()
+     }
+diff --git a/vendor/sdl2lite/Cargo.toml b/vendor/sdl2lite/Cargo.toml
+new file mode 100644
+index 0000000..afc85cf
+--- /dev/null
++++ b/vendor/sdl2lite/Cargo.toml
+@@ -0,0 +1,9 @@
++[package]
++name = "sdl2lite"
++version = "0.1.0"
++edition = "2021"
++description = "Enlace minimo a SDL2 cargado con dlopen en tiempo de ejecucion (Trimui)"
++license = "GPL-2.0-only"
++
++[dependencies]
++libc = "0.2"
+diff --git a/vendor/sdl2lite/src/lib.rs b/vendor/sdl2lite/src/lib.rs
+new file mode 100644
+index 0000000..65503c9
+--- /dev/null
++++ b/vendor/sdl2lite/src/lib.rs
+@@ -0,0 +1,195 @@
++//! Enlace minimo a SDL2, cargado con `dlopen` en tiempo de ejecucion.
++//!
++//! No hay dependencia en tiempo de enlace: el binario usa la `libSDL2` de la propia consola
++//! (la de Trimui, con su driver de video `mali`), que se encuentra mediante `LD_LIBRARY_PATH`.
++
++use std::{
++    ffi::{c_char, c_int, c_void, CStr, CString},
++    sync::OnceLock,
++};
++
++pub const SDL_INIT_AUDIO: u32 = 0x0000_0010;
++pub const SDL_INIT_VIDEO: u32 = 0x0000_0020;
++pub const SDL_INIT_JOYSTICK: u32 = 0x0000_0200;
++pub const SDL_INIT_EVENTS: u32 = 0x0000_4000;
++
++pub const SDL_WINDOWPOS_UNDEFINED: c_int = 0x1FFF_0000;
++pub const SDL_WINDOW_FULLSCREEN_DESKTOP: u32 = 0x0000_1001;
++pub const SDL_WINDOW_OPENGL: u32 = 0x0000_0002;
++pub const SDL_WINDOW_SHOWN: u32 = 0x0000_0004;
++
++pub const SDL_GL_RED_SIZE: c_int = 0;
++pub const SDL_GL_GREEN_SIZE: c_int = 1;
++pub const SDL_GL_BLUE_SIZE: c_int = 2;
++pub const SDL_GL_ALPHA_SIZE: c_int = 3;
++pub const SDL_GL_DEPTH_SIZE: c_int = 6;
++pub const SDL_GL_STENCIL_SIZE: c_int = 7;
++pub const SDL_GL_CONTEXT_MAJOR_VERSION: c_int = 17;
++pub const SDL_GL_CONTEXT_MINOR_VERSION: c_int = 18;
++pub const SDL_GL_CONTEXT_PROFILE_MASK: c_int = 21;
++pub const SDL_GL_CONTEXT_PROFILE_ES: c_int = 0x0004;
++
++pub const AUDIO_F32SYS: u16 = 0x8120;
++
++// Tipos de evento (SDL_EventType)
++pub const SDL_QUIT: u32 = 0x100;
++pub const SDL_WINDOWEVENT: u32 = 0x200;
++pub const SDL_KEYDOWN: u32 = 0x300;
++pub const SDL_KEYUP: u32 = 0x301;
++pub const SDL_JOYAXISMOTION: u32 = 0x600;
++pub const SDL_JOYHATMOTION: u32 = 0x602;
++pub const SDL_JOYBUTTONDOWN: u32 = 0x603;
++pub const SDL_JOYBUTTONUP: u32 = 0x604;
++pub const SDL_JOYDEVICEADDED: u32 = 0x605;
++pub const SDL_JOYDEVICEREMOVED: u32 = 0x606;
++
++// SDL_WindowEventID
++pub const SDL_WINDOWEVENT_SIZE_CHANGED: u8 = 6;
++pub const SDL_WINDOWEVENT_FOCUS_GAINED: u8 = 12;
++pub const SDL_WINDOWEVENT_FOCUS_LOST: u8 = 13;
++pub const SDL_WINDOWEVENT_CLOSE: u8 = 14;
++
++pub const SDL_HAT_UP: u8 = 1;
++pub const SDL_HAT_RIGHT: u8 = 2;
++pub const SDL_HAT_DOWN: u8 = 4;
++pub const SDL_HAT_LEFT: u8 = 8;
++
++/// `SDL_Event` es una union de 56 bytes. Se lee por desplazamientos, que son estables en SDL2.
++#[repr(C, align(8))]
++#[derive(Clone, Copy)]
++pub struct Event {
++    pub raw: [u8; 56],
++}
++
++impl Event {
++    pub const fn zeroed() -> Self {
++        Self { raw: [0; 56] }
++    }
++    pub fn kind(&self) -> u32 {
++        self.u32_at(0)
++    }
++    pub fn u32_at(&self, off: usize) -> u32 {
++        u32::from_ne_bytes([self.raw[off], self.raw[off + 1], self.raw[off + 2], self.raw[off + 3]])
++    }
++    pub fn i32_at(&self, off: usize) -> i32 {
++        self.u32_at(off) as i32
++    }
++    pub fn i16_at(&self, off: usize) -> i16 {
++        i16::from_ne_bytes([self.raw[off], self.raw[off + 1]])
++    }
++    pub fn u8_at(&self, off: usize) -> u8 {
++        self.raw[off]
++    }
++}
++
++#[repr(C)]
++pub struct AudioSpec {
++    pub freq: c_int,
++    pub format: u16,
++    pub channels: u8,
++    pub silence: u8,
++    pub samples: u16,
++    pub padding: u16,
++    pub size: u32,
++    pub callback: Option<unsafe extern "C" fn(userdata: *mut c_void, stream: *mut u8, len: c_int)>,
++    pub userdata: *mut c_void,
++}
++
++impl AudioSpec {
++    pub const fn zeroed() -> Self {
++        Self {
++            freq: 0,
++            format: 0,
++            channels: 0,
++            silence: 0,
++            samples: 0,
++            padding: 0,
++            size: 0,
++            callback: None,
++            userdata: std::ptr::null_mut(),
++        }
++    }
++}
++
++macro_rules! sdl_api {
++    ( $( $field:ident = $sym:literal : fn($($arg:ty),*) $(-> $ret:ty)? ; )* ) => {
++        /// Tabla de funciones de SDL2 resueltas con `dlsym`.
++        pub struct Sdl {
++            $( pub $field: unsafe extern "C" fn($($arg),*) $(-> $ret)?, )*
++        }
++
++        impl Sdl {
++            unsafe fn load(lib: *mut c_void) -> Result<Self, String> {
++                Ok(Self {
++                    $( $field: {
++                        let p = libc::dlsym(lib, concat!($sym, "\0").as_ptr().cast());
++                        if p.is_null() {
++                            return Err(format!("libSDL2 no tiene el simbolo {}", $sym))
++                        }
++                        std::mem::transmute::<*mut c_void, unsafe extern "C" fn($($arg),*) $(-> $ret)?>(p)
++                    }, )*
++                })
++            }
++        }
++    };
++}
++
++sdl_api! {
++    init_sub_system = "SDL_InitSubSystem": fn(u32) -> c_int;
++    get_error = "SDL_GetError": fn() -> *const c_char;
++    get_current_video_driver = "SDL_GetCurrentVideoDriver": fn() -> *const c_char;
++    create_window = "SDL_CreateWindow": fn(*const c_char, c_int, c_int, c_int, c_int, u32) -> *mut c_void;
++    destroy_window = "SDL_DestroyWindow": fn(*mut c_void);
++    get_window_size = "SDL_GetWindowSize": fn(*mut c_void, *mut c_int, *mut c_int);
++    set_window_title = "SDL_SetWindowTitle": fn(*mut c_void, *const c_char);
++    show_cursor = "SDL_ShowCursor": fn(c_int) -> c_int;
++    gl_set_attribute = "SDL_GL_SetAttribute": fn(c_int, c_int) -> c_int;
++    gl_create_context = "SDL_GL_CreateContext": fn(*mut c_void) -> *mut c_void;
++    gl_delete_context = "SDL_GL_DeleteContext": fn(*mut c_void);
++    gl_make_current = "SDL_GL_MakeCurrent": fn(*mut c_void, *mut c_void) -> c_int;
++    gl_swap_window = "SDL_GL_SwapWindow": fn(*mut c_void);
++    gl_set_swap_interval = "SDL_GL_SetSwapInterval": fn(c_int) -> c_int;
++    gl_get_swap_interval = "SDL_GL_GetSwapInterval": fn() -> c_int;
++    gl_get_proc_address = "SDL_GL_GetProcAddress": fn(*const c_char) -> *mut c_void;
++    gl_get_drawable_size = "SDL_GL_GetDrawableSize": fn(*mut c_void, *mut c_int, *mut c_int);
++    poll_event = "SDL_PollEvent": fn(*mut Event) -> c_int;
++    num_joysticks = "SDL_NumJoysticks": fn() -> c_int;
++    joystick_open = "SDL_JoystickOpen": fn(c_int) -> *mut c_void;
++    joystick_name = "SDL_JoystickName": fn(*mut c_void) -> *const c_char;
++    open_audio_device = "SDL_OpenAudioDevice": fn(*const c_char, c_int, *const AudioSpec, *mut AudioSpec, c_int) -> u32;
++    pause_audio_device = "SDL_PauseAudioDevice": fn(u32, c_int);
++}
++
++// SAFETY: son punteros a funciones de una biblioteca que no se descarga nunca.
++unsafe impl Send for Sdl {}
++unsafe impl Sync for Sdl {}
++
++static SDL: OnceLock<Result<Sdl, String>> = OnceLock::new();
++
++/// Carga `libSDL2` (una sola vez) y devuelve su tabla de funciones.
++pub fn get() -> Result<&'static Sdl, String> {
++    SDL.get_or_init(|| unsafe {
++        for name in ["libSDL2-2.0.so.0", "libSDL2.so", "libSDL2-2.0.so"] {
++            let c = CString::new(name).unwrap();
++            let lib = libc::dlopen(c.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL);
++            if !lib.is_null() {
++                return Sdl::load(lib)
++            }
++        }
++        Err("no se pudo cargar libSDL2 (revisa LD_LIBRARY_PATH)".to_string())
++    })
++    .as_ref()
++    .map_err(|e| e.clone())
++}
++
++/// Ultimo error de SDL como `String`.
++pub fn last_error(sdl: &Sdl) -> String {
++    unsafe {
++        let p = (sdl.get_error)();
++        if p.is_null() {
++            String::new()
++        } else {
++            CStr::from_ptr(p).to_string_lossy().into_owned()
++        }
++    }
++}
+diff --git a/vendor/udon/Cargo.toml b/vendor/udon/Cargo.toml
+index 94e7bbe..b7dd4c9 100644
+--- a/vendor/udon/Cargo.toml
++++ b/vendor/udon/Cargo.toml
+@@ -11,6 +11,7 @@ include = ["src/**/*", "Cargo.toml"]
+ 
+ [features]
+ default = []
++soundio = ["libsoundio-sys"]
+ #alsa = ["alsa_rs"]
+ #wasapi = []
+ wav = []
+@@ -24,4 +25,4 @@ serde = { version = "1.0", features = ["derive", "rc"], optional = true }
+ #alsa_rs = { package = "alsa", version = "0.5", optional = true }
+ 
+ [target.'cfg(not(target_os = "android"))'.dependencies]
+-libsoundio-sys = { path = "./libsoundio-sys" }
++libsoundio-sys = { path = "./libsoundio-sys", optional = true }
+diff --git a/vendor/udon/src/session.rs b/vendor/udon/src/session.rs
+index 7e144d0..5e42eac 100644
+--- a/vendor/udon/src/session.rs
++++ b/vendor/udon/src/session.rs
+@@ -147,7 +147,7 @@ backends! {
+     mod dummy => Dummy if not(target_pointer_width = "0"),
+ 
+     /// andrewrk's libsoundio
+-    mod sio => SoundIo if all(not(target_os = "android"), not(target_pointer_width = "0")),
++    mod sio => SoundIo if all(not(target_os = "android"), feature = "soundio", not(target_pointer_width = "0")),
+ 
+     // Windows Audio Session API (WASAPI)
+     //mod wasapi => Wasapi if all(target_os = "windows", feature = "wasapi"),

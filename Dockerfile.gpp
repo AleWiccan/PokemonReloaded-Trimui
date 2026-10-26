@@ -1,0 +1,6 @@
+# Capa extra sobre la imagen existente: anade el compilador de C++ para aarch64 (lo necesita imgui).
+FROM trimui-rust
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends g++-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+ENV CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++

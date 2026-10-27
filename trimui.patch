@@ -78,7 +78,7 @@ index 839bc48..b11e398 100644
          (Api::Gles2, (3, 3))
      } else {
 diff --git a/src/OpenGMK/gm8emulator/src/game.rs b/src/OpenGMK/gm8emulator/src/game.rs
-index 174b38a..8472823 100644
+index 174b38a..bbceeb0 100644
 --- a/src/OpenGMK/gm8emulator/src/game.rs
 +++ b/src/OpenGMK/gm8emulator/src/game.rs
 @@ -617,7 +617,7 @@ impl Game {
@@ -99,7 +99,67 @@ index 174b38a..8472823 100644
          unsafe {
              let glx = crate::render::opengl::glx::GLX.as_ref().unwrap();
              builder = builder.depth(glx.depth).visual(glx.visual);
-@@ -1442,7 +1442,16 @@ impl Game {
+@@ -686,6 +686,9 @@ impl Game {
+ 
+         // TODO: specific flags here (make wb mutable)
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("INICIANDO GRAFICOS", 0.42);
++
+         let mut renderer = Renderer::new((), &connection, &options, &window, settings.clear_colour.into())?;
+ 
+         let mut atlases = AtlasBuilder::new(renderer.max_texture_size() as _);
+@@ -831,6 +834,9 @@ impl Game {
+             temp_directory.pop();
+         }
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("CARGANDO SONIDOS", 0.48);
++
+         let sounds = sounds
+             .into_iter()
+             .enumerate()
+@@ -887,6 +893,9 @@ impl Game {
+             })
+             .collect::<Vec<_>>();
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("CARGANDO IMAGENES", 0.58);
++
+         let sprites = sprites
+             .into_iter()
+             .map(|o| {
+@@ -963,6 +972,9 @@ impl Game {
+             .collect::<Result<Vec<_>, ()>>()
+             .expect("failed to pack backgrounds");
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("CARGANDO FUENTES", 0.7);
++
+         let fonts = fonts
+             .into_iter()
+             .map(|o| {
+@@ -1063,6 +1075,9 @@ impl Game {
+             })
+             .collect::<Result<Vec<_>, _>>()?;
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("PREPARANDO SCRIPTS", 0.76);
++
+         let scripts = scripts
+             .into_iter()
+             .map(|t| {
+@@ -1178,6 +1193,9 @@ impl Game {
+             objects
+         };
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("PREPARANDO NIVELES", 0.9);
++
+         let rooms = rooms
+             .into_iter()
+             .map(|t| {
+@@ -1442,7 +1460,16 @@ impl Game {
                      (width, height)
                  }
              },
@@ -363,6 +423,56 @@ index ef2bde3..77cbdef 100644
  impl imgui::ClipboardBackend for EmuClipboardProvider {
      fn get(&mut self) -> Option<String> {
          if let Ok(ctx) = ClipboardProvider::new() {
+diff --git a/src/OpenGMK/gm8emulator/src/main_impl.rs b/src/OpenGMK/gm8emulator/src/main_impl.rs
+index 187c757..3f52803 100644
+--- a/src/OpenGMK/gm8emulator/src/main_impl.rs
++++ b/src/OpenGMK/gm8emulator/src/main_impl.rs
+@@ -176,6 +176,12 @@ pub fn run_game(args: Vec<String>) -> i32 {
+ 
+     let file_path = Path::new(&input);
+ 
++    #[cfg(feature = "trimui")]
++    {
++        sdl2lite::splash::start();
++        sdl2lite::splash::update("LEYENDO ARCHIVO", 0.03);
++    }
++
+     let mut file = match fs::read(file_path) {
+         Ok(data) => data,
+         Err(err) => {
+@@ -184,6 +190,9 @@ pub fn run_game(args: Vec<String>) -> i32 {
+         },
+     };
+ 
++    #[cfg(feature = "trimui")]
++    sdl2lite::splash::update("DESCOMPRIMIENDO", 0.15);
++
+     if verbose {
+         println!("loading '{}'...", input);
+     }
+@@ -207,6 +216,9 @@ pub fn run_game(args: Vec<String>) -> i32 {
+         },
+     };
+ 
++    #[cfg(feature = "trimui")]
++    sdl2lite::splash::update("PREPARANDO JUEGO", 0.40);
++
+     let absolute_path = match file_path.canonicalize() {
+         Ok(p) => p,
+         Err(e) => {
+@@ -243,6 +255,12 @@ pub fn run_game(args: Vec<String>) -> i32 {
+         },
+     };
+ 
++    #[cfg(feature = "trimui")]
++    {
++        sdl2lite::splash::update("CASI LISTO", 0.98);
++        sdl2lite::splash::finish();
++    }
++
+     let time_now = GameClock::SpoofedNanos(crate::gml::datetime::now_as_nanos());
+ 
+     if let Err(err) = if let Some(path) = project_path {
 diff --git a/src/OpenGMK/gm8emulator/src/render/opengl.rs b/src/OpenGMK/gm8emulator/src/render/opengl.rs
 index d7731d6..2d94cd5 100644
 --- a/src/OpenGMK/gm8emulator/src/render/opengl.rs
@@ -464,10 +574,10 @@ index d7731d6..2d94cd5 100644
                      gl::LINEAR
 diff --git a/src/OpenGMK/gm8emulator/src/render/opengl/sdl_gl.rs b/src/OpenGMK/gm8emulator/src/render/opengl/sdl_gl.rs
 new file mode 100644
-index 0000000..813fca9
+index 0000000..9766234
 --- /dev/null
 +++ b/src/OpenGMK/gm8emulator/src/render/opengl/sdl_gl.rs
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,107 @@
 +//! GL context creation through SDL2, for Trimui and similar handhelds (OpenGL ES, no X11/EGL by hand).
 +//!
 +//! The window is made by ramen's SDL2 backend, with GLES 3.0 attributes already requested. Here
@@ -513,10 +623,17 @@ index 0000000..813fca9
 +        if win.is_null() {
 +            return Err("ramen no entrego una ventana SDL".into())
 +        }
-+        let context = (sdl.gl_create_context)(win);
-+        if context.is_null() {
-+            return Err(format!("SDL_GL_CreateContext fallo: {}", sdl2lite::last_error(sdl)))
-+        }
++        // The loading screen already made a context for this window: keep using it.
++        let context = match sdl2lite::splash::context_for(win) {
++            Some(context) => context,
++            None => {
++                let context = (sdl.gl_create_context)(win);
++                if context.is_null() {
++                    return Err(format!("SDL_GL_CreateContext fallo: {}", sdl2lite::last_error(sdl)))
++                }
++                context
++            },
++        };
 +        if (sdl.gl_make_current)(win, context) != 0 {
 +            let err = sdl2lite::last_error(sdl);
 +            (sdl.gl_delete_context)(context);
@@ -686,10 +803,10 @@ index 0000000..30b6f67
 +shift+a3+ = K    # derecha    color de menu
 diff --git a/vendor/ramen/src/platform/sdl2.rs b/vendor/ramen/src/platform/sdl2.rs
 new file mode 100644
-index 0000000..1878002
+index 0000000..c7f74d9
 --- /dev/null
 +++ b/vendor/ramen/src/platform/sdl2.rs
-@@ -0,0 +1,578 @@
+@@ -0,0 +1,563 @@
 +//! SDL2 backend for ramen (Trimui and other handhelds with no X11/Wayland).
 +//!
 +//! The window and the GL context come from the device's own `libSDL2`, loaded at run time with
@@ -1144,29 +1261,14 @@ index 0000000..1878002
 +        let sdl = sdl()?;
 +        let title = CString::new(builder.title.replace('\0', "")).unwrap_or_default();
 +
-+        // The GL attributes have to be set before the window exists.
-+        let attrs: [(c_int, c_int); 9] = [
-+            (sdl2lite::SDL_GL_CONTEXT_PROFILE_MASK, sdl2lite::SDL_GL_CONTEXT_PROFILE_ES),
-+            (sdl2lite::SDL_GL_CONTEXT_MAJOR_VERSION, 3),
-+            (sdl2lite::SDL_GL_CONTEXT_MINOR_VERSION, 0),
-+            (sdl2lite::SDL_GL_RED_SIZE, 8),
-+            (sdl2lite::SDL_GL_GREEN_SIZE, 8),
-+            (sdl2lite::SDL_GL_BLUE_SIZE, 8),
-+            (sdl2lite::SDL_GL_ALPHA_SIZE, 8),
-+            (sdl2lite::SDL_GL_DEPTH_SIZE, 24),
-+            (sdl2lite::SDL_GL_STENCIL_SIZE, 8),
-+        ];
-+        for (attr, value) in attrs {
-+            let _ = unsafe { (sdl.gl_set_attribute)(attr, value) };
-+        }
-+
-+        // Always fullscreen at the desktop size: these screens have no window manager.
-+        let flags = sdl2lite::SDL_WINDOW_SHOWN | sdl2lite::SDL_WINDOW_OPENGL | sdl2lite::SDL_WINDOW_FULLSCREEN_DESKTOP;
-+        let handle = unsafe { (sdl.create_window)(title.as_ptr(), 0, 0, 1280, 720, flags) };
-+        if handle.is_null() {
-+            return Err(sdl_err("SDL_CreateWindow", sdl))
-+        }
-+        let _ = unsafe { (sdl.show_cursor)(0) };
++        // The loading screen may already have made the window (and the GL context); reuse it.
++        let handle = match sdl2lite::splash::window() {
++            Some(h) => {
++                unsafe { (sdl.set_window_title)(h, title.as_ptr()) };
++                h
++            },
++            None => sdl2lite::create_gl_window(sdl, &builder.title).map_err(|e| Error::Text(e.into()))?,
++        };
 +
 +        let (mut w, mut h): (c_int, c_int) = (0, 0);
 +        unsafe { (sdl.gl_get_drawable_size)(handle, &mut w, &mut h) };
@@ -1307,10 +1409,10 @@ index 0000000..afc85cf
 +libc = "0.2"
 diff --git a/vendor/sdl2lite/src/lib.rs b/vendor/sdl2lite/src/lib.rs
 new file mode 100644
-index 0000000..65503c9
+index 0000000..e7cd425
 --- /dev/null
 +++ b/vendor/sdl2lite/src/lib.rs
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,226 @@
 +//! Enlace minimo a SDL2, cargado con `dlopen` en tiempo de ejecucion.
 +//!
 +//! No hay dependencia en tiempo de enlace: el binario usa la `libSDL2` de la propia consola
@@ -1320,6 +1422,8 @@ index 0000000..65503c9
 +    ffi::{c_char, c_int, c_void, CStr, CString},
 +    sync::OnceLock,
 +};
++
++pub mod splash;
 +
 +pub const SDL_INIT_AUDIO: u32 = 0x0000_0010;
 +pub const SDL_INIT_VIDEO: u32 = 0x0000_0020;
@@ -1504,6 +1608,340 @@ index 0000000..65503c9
 +        } else {
 +            CStr::from_ptr(p).to_string_lossy().into_owned()
 +        }
++    }
++}
++
++/// Creates the fullscreen OpenGL ES window used by the game (and by the loading screen).
++///
++/// The GL attributes have to be set before the window exists. The window is always fullscreen at
++/// the desktop size: these screens have no window manager.
++pub fn create_gl_window(sdl: &Sdl, title: &str) -> Result<*mut c_void, String> {
++    let title = CString::new(title.replace('\0', "")).unwrap_or_default();
++    let attrs: [(c_int, c_int); 9] = [
++        (SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES),
++        (SDL_GL_CONTEXT_MAJOR_VERSION, 3),
++        (SDL_GL_CONTEXT_MINOR_VERSION, 0),
++        (SDL_GL_RED_SIZE, 8),
++        (SDL_GL_GREEN_SIZE, 8),
++        (SDL_GL_BLUE_SIZE, 8),
++        (SDL_GL_ALPHA_SIZE, 8),
++        (SDL_GL_DEPTH_SIZE, 24),
++        (SDL_GL_STENCIL_SIZE, 8),
++    ];
++    for (attr, value) in attrs {
++        let _ = unsafe { (sdl.gl_set_attribute)(attr, value) };
++    }
++    let flags = SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN_DESKTOP;
++    let handle = unsafe { (sdl.create_window)(title.as_ptr(), 0, 0, 1280, 720, flags) };
++    if handle.is_null() {
++        return Err(format!("SDL_CreateWindow: {}", last_error(sdl)))
++    }
++    let _ = unsafe { (sdl.show_cursor)(0) };
++    Ok(handle)
++}
+diff --git a/vendor/sdl2lite/src/splash.rs b/vendor/sdl2lite/src/splash.rs
+new file mode 100644
+index 0000000..f61bc78
+--- /dev/null
++++ b/vendor/sdl2lite/src/splash.rs
+@@ -0,0 +1,299 @@
++//! Minimal loading screen.
++//!
++//! Loading a big game takes up to a minute on the console and, until the engine draws its first
++//! frame, the screen shows nothing, which looks like a freeze. This module puts a window up right
++//! at the start and draws a title, a short message and a progress bar, using nothing but
++//! `glClear` + `glScissor` (no shaders, no textures, no files): the text comes from a tiny 5x7
++//! bitmap font built into the code.
++//!
++//! The window and the GL context created here are handed over to the engine (ramen and the
++//! renderer adopt them), so there is no second window. `update` keeps working after the handover,
++//! and restores the GL state it touches, until `finish` is called.
++
++use std::{
++    ffi::{c_char, c_int, c_void},
++    sync::{Mutex, OnceLock},
++    time::Instant,
++};
++
++use crate::{Sdl, SDL_INIT_EVENTS, SDL_INIT_VIDEO};
++
++type GlClearColor = unsafe extern "C" fn(f32, f32, f32, f32);
++type GlClear = unsafe extern "C" fn(u32);
++type GlCap = unsafe extern "C" fn(u32);
++type GlRect = unsafe extern "C" fn(c_int, c_int, c_int, c_int);
++type GlGetFloatv = unsafe extern "C" fn(u32, *mut f32);
++type GlGetIntegerv = unsafe extern "C" fn(u32, *mut c_int);
++type GlIsEnabled = unsafe extern "C" fn(u32) -> u8;
++
++const GL_COLOR_BUFFER_BIT: u32 = 0x4000;
++const GL_SCISSOR_TEST: u32 = 0x0C11;
++const GL_SCISSOR_BOX: u32 = 0x0C10;
++const GL_VIEWPORT: u32 = 0x0BA2;
++const GL_COLOR_CLEAR_VALUE: u32 = 0x0C22;
++const GL_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
++
++struct Gl {
++    clear_color: GlClearColor,
++    clear: GlClear,
++    enable: GlCap,
++    disable: GlCap,
++    scissor: GlRect,
++    viewport: GlRect,
++    get_floatv: GlGetFloatv,
++    get_integerv: GlGetIntegerv,
++    is_enabled: GlIsEnabled,
++}
++
++struct State {
++    sdl: &'static Sdl,
++    window: *mut c_void,
++    context: *mut c_void,
++    gl: Gl,
++    w: c_int,
++    h: c_int,
++}
++
++// SAFETY: only ever used from the thread that drives the game; the mutex just guards the static.
++unsafe impl Send for State {}
++
++static STATE: Mutex<Option<State>> = Mutex::new(None);
++static T0: OnceLock<Instant> = OnceLock::new();
++
++macro_rules! gl_fn {
++    ($sdl:expr, $name:literal, $ty:ty) => {{
++        let cname = concat!($name, "\0");
++        let p = unsafe { ($sdl.gl_get_proc_address)(cname.as_ptr() as *const c_char) };
++        if p.is_null() {
++            return Err(format!("falta {}", $name))
++        }
++        unsafe { std::mem::transmute::<*mut c_void, $ty>(p) }
++    }};
++}
++
++fn load_gl(sdl: &Sdl) -> Result<Gl, String> {
++    Ok(Gl {
++        clear_color: gl_fn!(sdl, "glClearColor", GlClearColor),
++        clear: gl_fn!(sdl, "glClear", GlClear),
++        enable: gl_fn!(sdl, "glEnable", GlCap),
++        disable: gl_fn!(sdl, "glDisable", GlCap),
++        scissor: gl_fn!(sdl, "glScissor", GlRect),
++        viewport: gl_fn!(sdl, "glViewport", GlRect),
++        get_floatv: gl_fn!(sdl, "glGetFloatv", GlGetFloatv),
++        get_integerv: gl_fn!(sdl, "glGetIntegerv", GlGetIntegerv),
++        is_enabled: gl_fn!(sdl, "glIsEnabled", GlIsEnabled),
++    })
++}
++
++fn try_start() -> Result<(), String> {
++    let sdl = crate::get()?;
++    if unsafe { (sdl.init_sub_system)(SDL_INIT_VIDEO | SDL_INIT_EVENTS) } != 0 {
++        return Err(format!("SDL_InitSubSystem: {}", crate::last_error(sdl)))
++    }
++    let window = crate::create_gl_window(sdl, "Cargando")?;
++    let fail = |msg: String| -> Result<(), String> {
++        unsafe { (sdl.destroy_window)(window) };
++        Err(msg)
++    };
++
++    let context = unsafe { (sdl.gl_create_context)(window) };
++    if context.is_null() {
++        return fail(format!("SDL_GL_CreateContext: {}", crate::last_error(sdl)))
++    }
++    if unsafe { (sdl.gl_make_current)(window, context) } != 0 {
++        unsafe { (sdl.gl_delete_context)(context) };
++        return fail(format!("SDL_GL_MakeCurrent: {}", crate::last_error(sdl)))
++    }
++    let gl = match load_gl(sdl) {
++        Ok(gl) => gl,
++        Err(e) => {
++            unsafe { (sdl.gl_delete_context)(context) };
++            return fail(e)
++        },
++    };
++
++    let (mut w, mut h): (c_int, c_int) = (0, 0);
++    unsafe { (sdl.gl_get_drawable_size)(window, &mut w, &mut h) };
++    if w <= 0 || h <= 0 {
++        unsafe { (sdl.get_window_size)(window, &mut w, &mut h) };
++    }
++    if w <= 0 || h <= 0 {
++        w = 1280;
++        h = 720;
++    }
++
++    *STATE.lock().unwrap() = Some(State { sdl, window, context, gl, w, h });
++    Ok(())
++}
++
++/// Opens the window and the GL context and draws the first frame. Best effort: if anything fails
++/// there is simply no loading screen, and the engine creates its own window as usual.
++pub fn start() {
++    let _ = T0.get_or_init(Instant::now);
++    if let Err(e) = try_start() {
++        eprintln!("[carga] sin pantalla de carga: {}", e);
++    } else {
++        update("INICIANDO", 0.0);
++    }
++}
++
++/// Redraws the screen with a message (ASCII, it is uppercased) and a progress between 0 and 1.
++/// Also logs the elapsed time, to see which stage takes longest.
++pub fn update(label: &str, progress: f32) {
++    let secs = T0.get().map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
++    eprintln!("[carga] {:6.1} s  {:>3.0}%  {}", secs, progress.clamp(0.0, 1.0) * 100.0, label);
++    if let Ok(guard) = STATE.lock() {
++        if let Some(st) = guard.as_ref() {
++            unsafe { draw(st, label, progress) };
++        }
++    }
++}
++
++/// The window made by the loading screen, if there is one, so the engine reuses it.
++pub fn window() -> Option<*mut c_void> {
++    STATE.lock().ok()?.as_ref().map(|st| st.window)
++}
++
++/// The GL context made by the loading screen for `window`, if it is the same window.
++pub fn context_for(window: *mut c_void) -> Option<*mut c_void> {
++    STATE.lock().ok()?.as_ref().filter(|st| st.window == window).map(|st| st.context)
++}
++
++/// Stops drawing. Call it once the engine is about to draw its own frames.
++pub fn finish() {
++    if let Ok(mut guard) = STATE.lock() {
++        *guard = None;
++    }
++}
++
++const BG: [f32; 3] = [0.07, 0.07, 0.10];
++const TITLE: [f32; 3] = [0.95, 0.95, 0.95];
++const LABEL: [f32; 3] = [0.65, 0.65, 0.72];
++const TRACK: [f32; 3] = [0.20, 0.20, 0.26];
++const FILL: [f32; 3] = [0.95, 0.78, 0.20];
++
++unsafe fn rect(st: &State, x: i32, y: i32, w: i32, h: i32, c: [f32; 3]) {
++    if w <= 0 || h <= 0 {
++        return
++    }
++    (st.gl.scissor)(x, st.h - y - h, w, h);
++    (st.gl.clear_color)(c[0], c[1], c[2], 1.0);
++    (st.gl.clear)(GL_COLOR_BUFFER_BIT);
++}
++
++fn text_width(s: &str, scale: i32) -> i32 {
++    (s.chars().count() as i32 * 6 * scale - scale).max(0)
++}
++
++unsafe fn text(st: &State, x: i32, y: i32, scale: i32, s: &str, c: [f32; 3]) {
++    let mut cx = x;
++    for ch in s.chars() {
++        let g = glyph(ch);
++        for (row, bits) in g.iter().enumerate() {
++            let mut col: i32 = 0;
++            while col < 5 {
++                if *bits & (0b10000u8 >> col) != 0 {
++                    let start = col;
++                    while col < 5 && *bits & (0b10000u8 >> col) != 0 {
++                        col += 1;
++                    }
++                    rect(st, cx + start * scale, y + row as i32 * scale, (col - start) * scale, scale, c);
++                } else {
++                    col += 1;
++                }
++            }
++        }
++        cx += 6 * scale;
++    }
++}
++
++unsafe fn text_centered(st: &State, y: i32, scale: i32, s: &str, c: [f32; 3]) {
++    text(st, (st.w - text_width(s, scale)) / 2, y, scale, s, c);
++}
++
++unsafe fn draw(st: &State, label: &str, progress: f32) {
++    let gl = &st.gl;
++
++    // Never draw into an engine framebuffer.
++    let mut fbo: c_int = 0;
++    (gl.get_integerv)(GL_FRAMEBUFFER_BINDING, &mut fbo);
++    if fbo != 0 {
++        return
++    }
++
++    // Remember what we touch, because after the handover the engine owns the GL state.
++    let (mut vp, mut sc, mut cc) = ([0 as c_int; 4], [0 as c_int; 4], [0f32; 4]);
++    (gl.get_integerv)(GL_VIEWPORT, vp.as_mut_ptr());
++    (gl.get_integerv)(GL_SCISSOR_BOX, sc.as_mut_ptr());
++    (gl.get_floatv)(GL_COLOR_CLEAR_VALUE, cc.as_mut_ptr());
++    let scissor_was_on = (gl.is_enabled)(GL_SCISSOR_TEST) != 0;
++
++    (gl.viewport)(0, 0, st.w, st.h);
++    (gl.enable)(GL_SCISSOR_TEST);
++
++    let s = (st.w / 160).max(2);
++    rect(st, 0, 0, st.w, st.h, BG);
++    text_centered(st, st.h * 30 / 100, s, "CARGANDO", TITLE);
++    text_centered(st, st.h * 47 / 100, (s / 2).max(1), &label.to_ascii_uppercase(), LABEL);
++
++    let (bw, bh) = (st.w / 2, s * 2);
++    let (bx, by) = ((st.w - bw) / 2, st.h * 62 / 100);
++    rect(st, bx, by, bw, bh, TRACK);
++    rect(st, bx, by, (bw as f32 * progress.clamp(0.0, 1.0)) as i32, bh, FILL);
++
++    text_centered(st, st.h * 80 / 100, (s / 2).max(1), "PUEDE TARDAR HASTA UN MINUTO", LABEL);
++
++    (st.sdl.gl_swap_window)(st.window);
++
++    (gl.viewport)(vp[0], vp[1], vp[2], vp[3]);
++    (gl.scissor)(sc[0], sc[1], sc[2], sc[3]);
++    (gl.clear_color)(cc[0], cc[1], cc[2], cc[3]);
++    if !scissor_was_on {
++        (gl.disable)(GL_SCISSOR_TEST);
++    }
++}
++
++/// 5x7 glyphs, one byte per row, bit 4 is the leftmost column. Only what the messages need.
++fn glyph(c: char) -> [u8; 7] {
++    match c.to_ascii_uppercase() {
++        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
++        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
++        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
++        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
++        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
++        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
++        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
++        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
++        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
++        'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
++        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
++        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
++        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
++        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
++        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
++        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
++        'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
++        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
++        'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
++        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
++        'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
++        'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
++        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
++        'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
++        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
++        'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
++        '0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
++        '1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
++        '2' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
++        '3' => [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
++        '4' => [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
++        '5' => [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
++        '6' => [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
++        '7' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
++        '8' => [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
++        '9' => [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
++        '.' => [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b01100, 0b01100],
++        '-' => [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
++        _ => [0; 7],
 +    }
 +}
 diff --git a/vendor/udon/Cargo.toml b/vendor/udon/Cargo.toml

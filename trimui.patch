@@ -78,7 +78,7 @@ index 839bc48..b11e398 100644
          (Api::Gles2, (3, 3))
      } else {
 diff --git a/src/OpenGMK/gm8emulator/src/game.rs b/src/OpenGMK/gm8emulator/src/game.rs
-index 174b38a..57dfa0e 100644
+index 174b38a..af9c4f9 100644
 --- a/src/OpenGMK/gm8emulator/src/game.rs
 +++ b/src/OpenGMK/gm8emulator/src/game.rs
 @@ -617,7 +617,7 @@ impl Game {
@@ -114,7 +114,7 @@ index 174b38a..57dfa0e 100644
          }
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("CARGANDO SONIDOS", 0.085);
++        sdl2lite::splash::update("CARGANDO SONIDOS", 0.09);
 +
          let sounds = sounds
              .into_iter()
@@ -124,7 +124,7 @@ index 174b38a..57dfa0e 100644
              .collect::<Vec<_>>();
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("CARGANDO IMAGENES", 0.087);
++        sdl2lite::splash::update("CARGANDO IMAGENES", 0.09);
 +
          let sprites = sprites
              .into_iter()
@@ -134,7 +134,7 @@ index 174b38a..57dfa0e 100644
              .expect("failed to pack backgrounds");
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("CARGANDO FUENTES", 0.088);
++        sdl2lite::splash::update("CARGANDO FUENTES", 0.095);
 +
          let fonts = fonts
              .into_iter()
@@ -144,7 +144,7 @@ index 174b38a..57dfa0e 100644
              .collect::<Result<Vec<_>, _>>()?;
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("PREPARANDO SCRIPTS", 0.09);
++        sdl2lite::splash::update("PREPARANDO SCRIPTS", 0.097);
 +
 +        let scripts_total = scripts.len();
          let scripts = scripts
@@ -152,7 +152,7 @@ index 174b38a..57dfa0e 100644
 -            .map(|t| {
 +            .enumerate()
 +            .map(|(idx, t)| {
-+                load_progress("PREPARANDO SCRIPTS", idx, scripts_total, 0.09, 0.25);
++                load_progress("PREPARANDO SCRIPTS", idx, scripts_total, 0.097, 0.42);
                  t.map(|b| {
                      // Compile a corrected copy of known-broken scripts, without touching the game.
                      let original = String::from_utf8_lossy(&b.source.0);
@@ -161,7 +161,7 @@ index 174b38a..57dfa0e 100644
              .collect::<Result<Vec<_>, _>>()?;
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("PREPARANDO TIMELINES", 0.25);
++        sdl2lite::splash::update("PREPARANDO TIMELINES", 0.42);
 +
          let timelines = timelines
              .into_iter()
@@ -171,7 +171,7 @@ index 174b38a..57dfa0e 100644
              .collect::<Result<Vec<_>, _>>()?;
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("PREPARANDO OBJETOS", 0.26);
++        sdl2lite::splash::update("PREPARANDO OBJETOS", 0.42);
 +
          let objects = {
              let mut object_parents: Vec<Option<i32>> = Vec::with_capacity(objects.len());
@@ -181,7 +181,7 @@ index 174b38a..57dfa0e 100644
 -                .map(|o| {
 +                .enumerate()
 +                .map(|(idx, o)| {
-+                    load_progress("PREPARANDO OBJETOS", idx, objects_total, 0.26, 0.39);
++                    load_progress("PREPARANDO OBJETOS", idx, objects_total, 0.42, 0.43);
                      object_parents.push(match &o {
                          Some(b) => Some(b.parent_index),
                          None => None,
@@ -190,7 +190,7 @@ index 174b38a..57dfa0e 100644
          };
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("PREPARANDO NIVELES", 0.39);
++        sdl2lite::splash::update("PREPARANDO NIVELES", 0.43);
 +
 +        let rooms_total = rooms.len();
          let rooms = rooms
@@ -198,7 +198,7 @@ index 174b38a..57dfa0e 100644
 -            .map(|t| {
 +            .enumerate()
 +            .map(|(idx, t)| {
-+                load_progress("PREPARANDO NIVELES", idx, rooms_total, 0.39, 0.75);
++                load_progress("PREPARANDO NIVELES", idx, rooms_total, 0.43, 0.44);
                  t.map(|b| {
                      let creation_code = compiler
                          .compile(&b.creation_code.0)
@@ -207,12 +207,12 @@ index 174b38a..57dfa0e 100644
              event_holders[ev::DRAW].iter().flat_map(|(_, x)| x.borrow().iter().copied().collect::<Vec<_>>()).collect();
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("SUBIENDO IMAGENES", 0.75);
++        sdl2lite::splash::update("PREPARANDO IMAGENES", 0.44);
 +
          renderer.push_atlases(atlases)?;
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("INICIANDO JUEGO", 0.85);
++        sdl2lite::splash::update("INICIANDO JUEGO", 0.99);
 +
          let mut game = Self {
              compiler,
@@ -240,7 +240,7 @@ index 174b38a..57dfa0e 100644
          game.temp_directory = game.encode_str_maybe(temp_directory.to_str().unwrap()).unwrap().into_owned().into();
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("CALCULANDO CONSTANTES", 0.88);
++        sdl2lite::splash::update("CALCULANDO CONSTANTES", 0.99);
 +
          // Evaluate constants
          for extension in extensions {
@@ -507,7 +507,7 @@ index ef2bde3..77cbdef 100644
      fn get(&mut self) -> Option<String> {
          if let Ok(ctx) = ClipboardProvider::new() {
 diff --git a/src/OpenGMK/gm8emulator/src/main_impl.rs b/src/OpenGMK/gm8emulator/src/main_impl.rs
-index 187c757..21f6df1 100644
+index 187c757..93c9251 100644
 --- a/src/OpenGMK/gm8emulator/src/main_impl.rs
 +++ b/src/OpenGMK/gm8emulator/src/main_impl.rs
 @@ -176,6 +176,12 @@ pub fn run_game(args: Vec<String>) -> i32 {
@@ -538,7 +538,7 @@ index 187c757..21f6df1 100644
      };
  
 +    #[cfg(feature = "trimui")]
-+    sdl2lite::splash::update("PREPARANDO JUEGO", 0.07);
++    sdl2lite::splash::update("PREPARANDO JUEGO", 0.075);
 +
      let absolute_path = match file_path.canonicalize() {
          Ok(p) => p,
@@ -549,7 +549,7 @@ index 187c757..21f6df1 100644
  
 +    #[cfg(feature = "trimui")]
 +    {
-+        sdl2lite::splash::update("CASI LISTO", 0.98);
++        sdl2lite::splash::update("CASI LISTO", 1.0);
 +        sdl2lite::splash::finish();
 +    }
 +
@@ -557,7 +557,7 @@ index 187c757..21f6df1 100644
  
      if let Err(err) = if let Some(path) = project_path {
 diff --git a/src/OpenGMK/gm8emulator/src/render/opengl.rs b/src/OpenGMK/gm8emulator/src/render/opengl.rs
-index d7731d6..2d94cd5 100644
+index d7731d6..ed1aa96 100644
 --- a/src/OpenGMK/gm8emulator/src/render/opengl.rs
 +++ b/src/OpenGMK/gm8emulator/src/render/opengl.rs
 @@ -23,20 +23,24 @@ mod wgl;
@@ -628,16 +628,32 @@ index d7731d6..2d94cd5 100644
                          gl::UNSIGNED_BYTE, // type
                          ptr::null(),       // data
                      );
-@@ -2175,7 +2179,7 @@ impl RendererTrait for RendererImpl {
+@@ -2174,15 +2178,23 @@ impl RendererTrait for RendererImpl {
+             }
  
              // upload textures
++            #[cfg(feature = "trimui")]
++            sdl2lite::splash::update("CONVIRTIENDO IMAGENES", 0.45);
++
              // GLES has no BGRA format, so the pixels are swapped to RGBA and uploaded that way.
 -            if cfg!(target_os = "android") {
 +            if cfg!(gles_backend) {
                  for (_, pixels) in &mut sprites {
                      crate::util::bgra2rgba(pixels);
                  }
-@@ -2216,7 +2220,7 @@ impl RendererTrait for RendererImpl {
+             }
+ 
++            #[cfg(feature = "trimui")]
++            sdl2lite::splash::update("SUBIENDO IMAGENES", 0.50);
++
+             // Compose and upload each atlas in a single batch to avoid thousands of small TexSubImage2D calls
+             for (atlas_idx, (packer, tex_id)) in packers.iter().zip(&textures).enumerate() {
++                #[cfg(feature = "trimui")]
++                sdl2lite::splash::progress("SUBIENDO IMAGENES", 0.50 + 0.49 * atlas_idx as f32 / textures.len() as f32);
+                 let (atlas_w, atlas_h) = packer.size();
+                 let mut atlas_buf = vec![0u8; (atlas_w * atlas_h * 4) as usize];
+ 
+@@ -2216,7 +2228,7 @@ impl RendererTrait for RendererImpl {
                      0,                    // yoffset
                      atlas_w as _,         // width
                      atlas_h as _,         // height
@@ -646,7 +662,7 @@ index d7731d6..2d94cd5 100644
                      gl::UNSIGNED_BYTE,    // type
                      atlas_buf.as_ptr() as _, // pixels
                  );
-@@ -3876,7 +3880,7 @@ impl RendererTrait for RendererImpl {
+@@ -3876,7 +3888,7 @@ impl RendererTrait for RendererImpl {
                  w_x + w_w,
                  blit_y + w_h,
                  gl::COLOR_BUFFER_BIT,
@@ -817,10 +833,10 @@ index eb9be70..9adfb09 100644
  
 diff --git a/vendor/ramen/src/platform/controls_default.ini b/vendor/ramen/src/platform/controls_default.ini
 new file mode 100644
-index 0000000..30b6f67
+index 0000000..8f72ab6
 --- /dev/null
 +++ b/vendor/ramen/src/platform/controls_default.ini
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,64 @@
 +# Controles de Pokemon Reloaded en Trimui (Smart Pro).
 +#
 +# FORMATO   entrada = TECLA
@@ -878,6 +894,7 @@ index 0000000..30b6f67
 +shift+b3 = 8     # Y
 +shift+b4 = 9     # L1
 +shift+b5 = F8    # R1  smartphone
++shift+a5+ = Q    # R2  misiones
 +
 +# palanca derecha con Select mantenido
 +shift+a4- = F12  # arriba     Pokedex
@@ -1724,10 +1741,10 @@ index 0000000..e7cd425
 +}
 diff --git a/vendor/sdl2lite/src/splash.rs b/vendor/sdl2lite/src/splash.rs
 new file mode 100644
-index 0000000..0c06cbb
+index 0000000..7b9497e
 --- /dev/null
 +++ b/vendor/sdl2lite/src/splash.rs
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,338 @@
 +//! Minimal loading screen.
 +//!
 +//! Loading a big game takes up to a minute on the console and, until the engine draws its first
@@ -1755,13 +1772,18 @@ index 0000000..0c06cbb
 +type GlGetFloatv = unsafe extern "C" fn(u32, *mut f32);
 +type GlGetIntegerv = unsafe extern "C" fn(u32, *mut c_int);
 +type GlIsEnabled = unsafe extern "C" fn(u32) -> u8;
++type GlBindFramebuffer = unsafe extern "C" fn(u32, u32);
 +
 +const GL_COLOR_BUFFER_BIT: u32 = 0x4000;
 +const GL_SCISSOR_TEST: u32 = 0x0C11;
 +const GL_SCISSOR_BOX: u32 = 0x0C10;
 +const GL_VIEWPORT: u32 = 0x0BA2;
 +const GL_COLOR_CLEAR_VALUE: u32 = 0x0C22;
-+const GL_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
++const GL_DRAW_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
++const GL_READ_FRAMEBUFFER_BINDING: u32 = 0x8CAA;
++const GL_FRAMEBUFFER: u32 = 0x8D40;
++const GL_READ_FRAMEBUFFER: u32 = 0x8CA8;
++const GL_DRAW_FRAMEBUFFER: u32 = 0x8CA9;
 +
 +struct Gl {
 +    clear_color: GlClearColor,
@@ -1773,6 +1795,7 @@ index 0000000..0c06cbb
 +    get_floatv: GlGetFloatv,
 +    get_integerv: GlGetIntegerv,
 +    is_enabled: GlIsEnabled,
++    bind_framebuffer: GlBindFramebuffer,
 +}
 +
 +struct State {
@@ -1816,6 +1839,7 @@ index 0000000..0c06cbb
 +        get_floatv: gl_fn!(sdl, "glGetFloatv", GlGetFloatv),
 +        get_integerv: gl_fn!(sdl, "glGetIntegerv", GlGetIntegerv),
 +        is_enabled: gl_fn!(sdl, "glIsEnabled", GlIsEnabled),
++        bind_framebuffer: gl_fn!(sdl, "glBindFramebuffer", GlBindFramebuffer),
 +    })
 +}
 +
@@ -1974,12 +1998,12 @@ index 0000000..0c06cbb
 +unsafe fn draw(st: &State, label: &str, progress: f32) {
 +    let gl = &st.gl;
 +
-+    // Never draw into an engine framebuffer.
-+    let mut fbo: c_int = 0;
-+    (gl.get_integerv)(GL_FRAMEBUFFER_BINDING, &mut fbo);
-+    if fbo != 0 {
-+        return
-+    }
++    // The engine renders the game into its own offscreen framebuffer and keeps it bound, so draw
++    // into the window's framebuffer (0) instead, and give the engine's back afterwards.
++    let (mut fbo_draw, mut fbo_read): (c_int, c_int) = (0, 0);
++    (gl.get_integerv)(GL_DRAW_FRAMEBUFFER_BINDING, &mut fbo_draw);
++    (gl.get_integerv)(GL_READ_FRAMEBUFFER_BINDING, &mut fbo_read);
++    (gl.bind_framebuffer)(GL_FRAMEBUFFER, 0);
 +
 +    // Remember what we touch, because after the handover the engine owns the GL state.
 +    let (mut vp, mut sc, mut cc) = ([0 as c_int; 4], [0 as c_int; 4], [0f32; 4]);
@@ -2005,6 +2029,8 @@ index 0000000..0c06cbb
 +
 +    (st.sdl.gl_swap_window)(st.window);
 +
++    (gl.bind_framebuffer)(GL_DRAW_FRAMEBUFFER, fbo_draw as u32);
++    (gl.bind_framebuffer)(GL_READ_FRAMEBUFFER, fbo_read as u32);
 +    (gl.viewport)(vp[0], vp[1], vp[2], vp[3]);
 +    (gl.scissor)(sc[0], sc[1], sc[2], sc[3]);
 +    (gl.clear_color)(cc[0], cc[1], cc[2], cc[3]);

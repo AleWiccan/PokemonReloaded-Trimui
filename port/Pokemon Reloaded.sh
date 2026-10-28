@@ -14,7 +14,7 @@ export OPENGMK_SCALING="${OPENGMK_SCALING:-aspect}"   # aspect = mantiene la pro
 export RUST_BACKTRACE=1
 
 LOGF="$PORT/log.txt"
-echo "[launcher] version 4 - $(date)" > "$LOGF"
+echo "[launcher] version 5 - $(date)" > "$LOGF"
 
 # SoundFont para la musica MIDI (.mid). Se usa el primer .sf2 que haya; mejor uno ligero (la consola tiene 1 GB de RAM).
 SF=""
@@ -37,34 +37,46 @@ fi
 chmod +x "$PORT/gm8emulator"
 
 # --- diagnostico de memoria (la consola tiene 1 GB). Desactivado por defecto: crear un archivo mem.on
-#     en esta carpeta para que se escriba mem.txt.
+#     en esta carpeta para que se escriba mem.txt. (Calcular el tamano de la carpeta del juego recorre
+#     miles de archivos de la SD y tarda unos 10 s, asi que solo se hace con mem.on.)
 MEMON=0
 [ -f "$PORT/mem.on" ] && MEMON=1
 MEM="$PORT/mem.txt"
-[ "$MEMON" = "1" ] || MEM="/dev/null"
-{
-  echo "=== $(date) ==="
-  grep -E 'MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree' /proc/meminfo
-  echo "carpeta del juego: $(du -sm "$PORT/game" 2>/dev/null | cut -f1) MB"
-} > "$MEM"
+if [ "$MEMON" = "1" ]; then
+  {
+    echo "=== $(date) ==="
+    grep -E 'MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree' /proc/meminfo
+    echo "carpeta del juego: $(du -sm "$PORT/game" 2>/dev/null | cut -f1) MB"
+  } > "$MEM"
+else
+  MEM="/dev/null"
+fi
 
 # --- swap: el juego llega a ~560 MB al cargar y la consola tiene 1 GB, asi que sin swap lo mata el sistema.
-#     Se activa solo (768 MB en la SD, se crea la primera vez). Crear un archivo swap.off aqui para desactivarlo.
-if [ ! -f "$PORT/swap.off" ] && ! grep -q "$PORT/swapfile" /proc/swaps 2>/dev/null; then
-  if [ ! -f "$PORT/swapfile" ]; then
-    echo "creando swapfile de 768 MB (solo la primera vez)..." >> "$MEM"
-    dd if=/dev/zero of="$PORT/swapfile" bs=1M count=768 >> "$MEM" 2>&1
-    chmod 600 "$PORT/swapfile"
-    mkswap "$PORT/swapfile" >> "$MEM" 2>&1
-  fi
-  if swapon "$PORT/swapfile" >> "$MEM" 2>&1; then
-    echo "swap activado" >> "$MEM"
+#     Se activa solo (768 MB en la SD). Crear un archivo swap.off aqui para desactivarlo.
+#     Si el swapfile ya existe, se activa en segundo plano para que la pantalla de carga salga de inmediato:
+#     el pico de memoria llega varios segundos despues de arrancar.
+enable_swap() {
+  T_SWAP="$(date +%s)"
+  if swapon "$PORT/swapfile" >/dev/null 2>&1; then
+    echo "[launcher] swap activado en $(( $(date +%s) - T_SWAP )) s" >> "$LOGF"
   else
-    echo "swapon FALLO (el kernel o el sistema de archivos de la SD no lo admiten)" >> "$MEM"
     echo "[launcher] swapon FALLO: sin swap el juego puede cerrarse por falta de memoria" >> "$LOGF"
+  fi
+}
+if [ ! -f "$PORT/swap.off" ] && ! grep -q "$PORT/swapfile" /proc/swaps 2>/dev/null; then
+  if [ -f "$PORT/swapfile" ]; then
+    enable_swap &
+  else
+    echo "[launcher] creando swapfile de 768 MB (solo la primera vez, tarda un rato)..." >> "$LOGF"
+    dd if=/dev/zero of="$PORT/swapfile" bs=1M count=768 >/dev/null 2>&1
+    chmod 600 "$PORT/swapfile"
+    mkswap "$PORT/swapfile" >/dev/null 2>&1
+    enable_swap
   fi
 fi
 
+echo "[launcher] lanzando el emulador - $(date +%T)" >> "$LOGF"
 cd "$PORT/game" || exit 1
 "$PORT/gm8emulator" "$GAME" >> "$LOGF" 2>&1 &
 EMU=$!

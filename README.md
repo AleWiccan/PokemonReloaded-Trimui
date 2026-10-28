@@ -64,6 +64,7 @@ Reparto por defecto. Se puede cambiar en `controls.ini` sin recompilar.
 | A, B, X, Y | 5, 6, 7, 8 |
 | L1 | 9 |
 | R1 | F8 (smartphone) |
+| R2 | Q (misiones) |
 | Palanca derecha ↑ / ↓ | F12 (Pokédex) / D (dar objeto) |
 | Palanca derecha ← / → | L (estilo de menú, ubicaciones en la Pokédex) / K (color de menú) |
 

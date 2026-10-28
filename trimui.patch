@@ -78,7 +78,7 @@ index 839bc48..b11e398 100644
          (Api::Gles2, (3, 3))
      } else {
 diff --git a/src/OpenGMK/gm8emulator/src/game.rs b/src/OpenGMK/gm8emulator/src/game.rs
-index 174b38a..bbceeb0 100644
+index 174b38a..57dfa0e 100644
 --- a/src/OpenGMK/gm8emulator/src/game.rs
 +++ b/src/OpenGMK/gm8emulator/src/game.rs
 @@ -617,7 +617,7 @@ impl Game {
@@ -104,7 +104,7 @@ index 174b38a..bbceeb0 100644
          // TODO: specific flags here (make wb mutable)
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("INICIANDO GRAFICOS", 0.42);
++        sdl2lite::splash::update("INICIANDO GRAFICOS", 0.08);
 +
          let mut renderer = Renderer::new((), &connection, &options, &window, settings.clear_colour.into())?;
  
@@ -114,7 +114,7 @@ index 174b38a..bbceeb0 100644
          }
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("CARGANDO SONIDOS", 0.48);
++        sdl2lite::splash::update("CARGANDO SONIDOS", 0.085);
 +
          let sounds = sounds
              .into_iter()
@@ -124,7 +124,7 @@ index 174b38a..bbceeb0 100644
              .collect::<Vec<_>>();
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("CARGANDO IMAGENES", 0.58);
++        sdl2lite::splash::update("CARGANDO IMAGENES", 0.087);
 +
          let sprites = sprites
              .into_iter()
@@ -134,32 +134,90 @@ index 174b38a..bbceeb0 100644
              .expect("failed to pack backgrounds");
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("CARGANDO FUENTES", 0.7);
++        sdl2lite::splash::update("CARGANDO FUENTES", 0.088);
 +
          let fonts = fonts
              .into_iter()
              .map(|o| {
-@@ -1063,6 +1075,9 @@ impl Game {
+@@ -1063,9 +1075,15 @@ impl Game {
              })
              .collect::<Result<Vec<_>, _>>()?;
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("PREPARANDO SCRIPTS", 0.76);
++        sdl2lite::splash::update("PREPARANDO SCRIPTS", 0.09);
 +
++        let scripts_total = scripts.len();
          let scripts = scripts
              .into_iter()
+-            .map(|t| {
++            .enumerate()
++            .map(|(idx, t)| {
++                load_progress("PREPARANDO SCRIPTS", idx, scripts_total, 0.09, 0.25);
+                 t.map(|b| {
+                     // Compile a corrected copy of known-broken scripts, without touching the game.
+                     let original = String::from_utf8_lossy(&b.source.0);
+@@ -1084,6 +1102,9 @@ impl Game {
+             })
+             .collect::<Result<Vec<_>, _>>()?;
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("PREPARANDO TIMELINES", 0.25);
++
+         let timelines = timelines
+             .into_iter()
              .map(|t| {
-@@ -1178,6 +1193,9 @@ impl Game {
+@@ -1105,11 +1126,17 @@ impl Game {
+             })
+             .collect::<Result<Vec<_>, _>>()?;
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("PREPARANDO OBJETOS", 0.26);
++
+         let objects = {
+             let mut object_parents: Vec<Option<i32>> = Vec::with_capacity(objects.len());
++            let objects_total = objects.len();
+             let mut objects = objects
+                 .into_iter()
+-                .map(|o| {
++                .enumerate()
++                .map(|(idx, o)| {
++                    load_progress("PREPARANDO OBJETOS", idx, objects_total, 0.26, 0.39);
+                     object_parents.push(match &o {
+                         Some(b) => Some(b.parent_index),
+                         None => None,
+@@ -1178,9 +1205,15 @@ impl Game {
              objects
          };
  
 +        #[cfg(feature = "trimui")]
-+        sdl2lite::splash::update("PREPARANDO NIVELES", 0.9);
++        sdl2lite::splash::update("PREPARANDO NIVELES", 0.39);
 +
++        let rooms_total = rooms.len();
          let rooms = rooms
              .into_iter()
-             .map(|t| {
-@@ -1442,7 +1460,16 @@ impl Game {
+-            .map(|t| {
++            .enumerate()
++            .map(|(idx, t)| {
++                load_progress("PREPARANDO NIVELES", idx, rooms_total, 0.39, 0.75);
+                 t.map(|b| {
+                     let creation_code = compiler
+                         .compile(&b.creation_code.0)
+@@ -1308,8 +1341,14 @@ impl Game {
+         let custom_draw_objects =
+             event_holders[ev::DRAW].iter().flat_map(|(_, x)| x.borrow().iter().copied().collect::<Vec<_>>()).collect();
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("SUBIENDO IMAGENES", 0.75);
++
+         renderer.push_atlases(atlases)?;
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("INICIANDO JUEGO", 0.85);
++
+         let mut game = Self {
+             compiler,
+             text_files: HandleArray::new(),
+@@ -1442,7 +1481,16 @@ impl Game {
                      (width, height)
                  }
              },
@@ -177,6 +235,31 @@ index 174b38a..bbceeb0 100644
              window_inner_size: (width, height),
              window_is_logical_dpi: false,
              window_offset_spoof: (0, 0),
+@@ -1452,6 +1500,9 @@ impl Game {
+ 
+         game.temp_directory = game.encode_str_maybe(temp_directory.to_str().unwrap()).unwrap().into_owned().into();
+ 
++        #[cfg(feature = "trimui")]
++        sdl2lite::splash::update("CALCULANDO CONSTANTES", 0.88);
++
+         // Evaluate constants
+         for extension in extensions {
+             for file in extension.files {
+@@ -3607,3 +3658,14 @@ impl<T> GetAsset<T> for Vec<Option<T>> {
+         self.get_mut(usize::try_from(index).ok()?)?.as_mut()
+     }
+ }
++
++/// Progress inside a loading loop: `done` of `total` items, mapped onto `from..to` of the bar.
++/// Only does anything on Trimui, where it moves the loading screen's bar.
++#[cfg(feature = "trimui")]
++fn load_progress(label: &str, done: usize, total: usize, from: f32, to: f32) {
++    let fraction = if total == 0 { 1.0 } else { done as f32 / total as f32 };
++    sdl2lite::splash::progress(label, from + (to - from) * fraction);
++}
++
++#[cfg(not(feature = "trimui"))]
++fn load_progress(_label: &str, _done: usize, _total: usize, _from: f32, _to: f32) {}
 diff --git a/src/OpenGMK/gm8emulator/src/game/audio.rs b/src/OpenGMK/gm8emulator/src/game/audio.rs
 index b607cd6..b9612c9 100644
 --- a/src/OpenGMK/gm8emulator/src/game/audio.rs
@@ -424,7 +507,7 @@ index ef2bde3..77cbdef 100644
      fn get(&mut self) -> Option<String> {
          if let Ok(ctx) = ClipboardProvider::new() {
 diff --git a/src/OpenGMK/gm8emulator/src/main_impl.rs b/src/OpenGMK/gm8emulator/src/main_impl.rs
-index 187c757..3f52803 100644
+index 187c757..21f6df1 100644
 --- a/src/OpenGMK/gm8emulator/src/main_impl.rs
 +++ b/src/OpenGMK/gm8emulator/src/main_impl.rs
 @@ -176,6 +176,12 @@ pub fn run_game(args: Vec<String>) -> i32 {
@@ -434,7 +517,7 @@ index 187c757..3f52803 100644
 +    #[cfg(feature = "trimui")]
 +    {
 +        sdl2lite::splash::start();
-+        sdl2lite::splash::update("LEYENDO ARCHIVO", 0.03);
++        sdl2lite::splash::update("LEYENDO ARCHIVO", 0.0);
 +    }
 +
      let mut file = match fs::read(file_path) {
@@ -445,7 +528,7 @@ index 187c757..3f52803 100644
      };
  
 +    #[cfg(feature = "trimui")]
-+    sdl2lite::splash::update("DESCOMPRIMIENDO", 0.15);
++    sdl2lite::splash::update("DESCOMPRIMIENDO", 0.01);
 +
      if verbose {
          println!("loading '{}'...", input);
@@ -455,7 +538,7 @@ index 187c757..3f52803 100644
      };
  
 +    #[cfg(feature = "trimui")]
-+    sdl2lite::splash::update("PREPARANDO JUEGO", 0.40);
++    sdl2lite::splash::update("PREPARANDO JUEGO", 0.07);
 +
      let absolute_path = match file_path.canonicalize() {
          Ok(p) => p,
@@ -1641,10 +1724,10 @@ index 0000000..e7cd425
 +}
 diff --git a/vendor/sdl2lite/src/splash.rs b/vendor/sdl2lite/src/splash.rs
 new file mode 100644
-index 0000000..f61bc78
+index 0000000..0c06cbb
 --- /dev/null
 +++ b/vendor/sdl2lite/src/splash.rs
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,329 @@
 +//! Minimal loading screen.
 +//!
 +//! Loading a big game takes up to a minute on the console and, until the engine draws its first
@@ -1660,7 +1743,7 @@ index 0000000..f61bc78
 +use std::{
 +    ffi::{c_char, c_int, c_void},
 +    sync::{Mutex, OnceLock},
-+    time::Instant,
++    time::{Duration, Instant},
 +};
 +
 +use crate::{Sdl, SDL_INIT_EVENTS, SDL_INIT_VIDEO};
@@ -1706,6 +1789,10 @@ index 0000000..f61bc78
 +
 +static STATE: Mutex<Option<State>> = Mutex::new(None);
 +static T0: OnceLock<Instant> = OnceLock::new();
++/// When the screen was last redrawn, to throttle `progress`.
++static LAST_DRAW: Mutex<Option<Instant>> = Mutex::new(None);
++/// Minimum time between two redraws caused by `progress`: drawing must not slow the loading down.
++const PROGRESS_INTERVAL: Duration = Duration::from_millis(300);
 +
 +macro_rules! gl_fn {
 +    ($sdl:expr, $name:literal, $ty:ty) => {{
@@ -1751,6 +1838,8 @@ index 0000000..f61bc78
 +        unsafe { (sdl.gl_delete_context)(context) };
 +        return fail(format!("SDL_GL_MakeCurrent: {}", crate::last_error(sdl)))
 +    }
++    // No vsync here: waiting for it on every redraw would only slow the loading down.
++    let _ = unsafe { (sdl.gl_set_swap_interval)(0) };
 +    let gl = match load_gl(sdl) {
 +        Ok(gl) => gl,
 +        Err(e) => {
@@ -1789,6 +1878,30 @@ index 0000000..f61bc78
 +pub fn update(label: &str, progress: f32) {
 +    let secs = T0.get().map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
 +    eprintln!("[carga] {:6.1} s  {:>3.0}%  {}", secs, progress.clamp(0.0, 1.0) * 100.0, label);
++    draw_now(label, progress);
++}
++
++/// Like `update`, but meant for loops: it does not log, and it redraws at most every 300 ms.
++pub fn progress(label: &str, progress: f32) {
++    if let Ok(mut last) = LAST_DRAW.lock() {
++        if let Some(t) = *last {
++            if t.elapsed() < PROGRESS_INTERVAL {
++                return
++            }
++        }
++        *last = Some(Instant::now());
++    }
++    draw_now_unthrottled(label, progress);
++}
++
++fn draw_now(label: &str, progress: f32) {
++    if let Ok(mut last) = LAST_DRAW.lock() {
++        *last = Some(Instant::now());
++    }
++    draw_now_unthrottled(label, progress);
++}
++
++fn draw_now_unthrottled(label: &str, progress: f32) {
 +    if let Ok(guard) = STATE.lock() {
 +        if let Some(st) = guard.as_ref() {
 +            unsafe { draw(st, label, progress) };
